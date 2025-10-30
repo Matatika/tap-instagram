@@ -198,9 +198,9 @@ class MediaStream(InstagramStream):
 
     def get_child_context(self, record: dict, context: Optional[dict]) -> dict:
         return {
-            # "user_id": context["user_id"],
+            "user_id": context["user_id"],
             "media_id": record["id"],
-            "media_type": record["media_type"],
+            "media_type": record.get("media_type"),
             # media_product_type not present for carousel children media
             "media_product_type": record.get("media_product_type"),
         }
@@ -392,6 +392,34 @@ class MediaChildrenStream(MediaStream):
                 )
             yield row
 
+class MediaCommentsStream(MediaStream):
+    """Define custom stream."""
+
+    name = "media_comments"
+    parent_stream_type = MediaStream
+    state_partitioning_keys = ["user_id"]
+    path = "/{media_id}/comments"  # media_id is populated using child context keys from MediaStream
+    # caption, comments_count, is_comment_enabled, like_count, media_product_type
+    # not available on album children
+    # TODO: Is media_product_type available on children of some media types? carousel vs album children?
+    # https://developers.facebook.com/docs/instagram-api/reference/ig-media#fields
+    fields = [
+        "id",
+        "text",
+        "timestamp",
+        "username",
+        "like_count",
+        "replies",
+        "media_type"
+    ]
+
+    def parse_response(self, response: requests.Response) -> Iterable[dict]:
+        for row in extract_jsonpath(self.records_jsonpath, input=response.json()):
+            if "timestamp" in row:
+                row["timestamp"] = pendulum.parse(row["timestamp"]).format(
+                    "YYYY-MM-DD HH:mm:ss"
+                )
+            yield row
 
 class MediaInsightsStream(InstagramStream):
     """Define custom stream."""
@@ -501,6 +529,7 @@ class MediaInsightsStream(InstagramStream):
             context["media_type"], context["media_product_type"]
         )
         params["metric"] = ",".join(metrics)
+        params["period"] = "days_28"
         return params
 
     def validate_response(self, response: requests.Response) -> None:
@@ -731,6 +760,7 @@ class UserInsightsStream(InstagramStream):
     max_time_window: timedelta = pendulum.duration(days=30)
     time_period: str  # TODO: Use an Enum type instead
     metrics: List[str]
+    metric_type = "total_value"
 
     # Optionally, you may also use `schema_filepath` in place of `schema`:
     # schema_filepath = SCHEMAS_DIR / "users.json"
@@ -796,11 +826,13 @@ class UserInsightsStream(InstagramStream):
 
         Returns: DateTime objects for "since" and "until"
         """
+        two_years_ago = pendulum.now().subtract(years=1)
+        min_since = max(min_since, two_years_ago)
         try:
             since = min(max(self.get_starting_timestamp(context), min_since), max_until)
             window_end = min(
                 self.get_replication_key_signpost(context),
-                pendulum.instance(since).add(seconds=max_time_window.seconds),
+                pendulum.instance(since).add(seconds=max_time_window.total_seconds()),
             )
         # seeing cases where self.get_starting_timestamp() is null
         # possibly related to target-bigquery pushing malformed state - https://gitlab.com/meltano/sdk/-/issues/300
@@ -819,6 +851,7 @@ class UserInsightsStream(InstagramStream):
             return params
         params["metric"] = ",".join(self.metrics)
         params["period"] = self.time_period
+        params["metric_type"] = self.metric_type
 
         if self.has_pagination:
             since, until = self._fetch_time_based_pagination_range(
@@ -900,16 +933,43 @@ class UserInsightsDailyStream(UserInsightsStream):
 
     name = "user_insights_daily"
     metrics = [
-        "email_contacts",
-        "get_directions_clicks",
-        "impressions",
-        "phone_call_clicks",
-        "profile_views",
-        "reach",
-        "text_message_clicks",
-        "website_clicks",
+        "reach"
+        , "website_clicks"
+        , "profile_views"
+        , "accounts_engaged"
+        , "total_interactions"
+        , "likes"
+        , "comments"
+        , "shares"
+        , "saves"
+        , "replies"
+        , "follows_and_unfollows"
+        , "profile_links_taps"
+        , "views"
+        , "content_views"
     ]
     time_period = "day"
+
+class UserInsightsLifetimeStream(UserInsightsStream):
+    """Define custom stream."""
+
+    name = "user_insights_lifetime"
+    metrics = [
+        "engaged_audience_demographics"
+        ,"follower_demographics"
+    ]
+    time_period = "lifetime"
+    timeframe = "this_month"
+    breakdown = "age"
+
+    def get_url_params(self, context, next_page_token):
+        """Return a dictionary of URL query parameters."""
+        params = super().get_url_params(context, next_page_token)
+        # Add the new parameter
+        params["timeframe"] = self.timeframe
+        params["breakdown"] = self.breakdown
+        return params
+
 
 
 class UserInsightsWeeklyStream(UserInsightsStream):
@@ -932,3 +992,41 @@ class UserInsights28DayStream(UserInsightsStream):
         "reach",
     ]
     time_period = "days_28"
+
+class UserInsightsCustomStream(UserInsightsStream):
+    """Define custom stream."""
+
+    def __init__(self, tap, report_config: Dict[str, Any]):
+        self.name = report_config["name"]
+        super().__init__(tap)
+        self.report_config = report_config
+
+        # Config-driven attributes
+        self.metrics = report_config["metrics"]
+        self.time_period = report_config.get("time_period", "day")
+        self.timeframe = report_config.get("timeframe")
+        self.fields = report_config.get("fields", [])
+        self.ig_user_ids = self.config.get("ig_user_ids", [])
+        self.breakdown = report_config.get("breakdown")
+
+    @property
+    def partitions(self) -> Optional[List[dict]]:
+        """One partition per Instagram user ID."""
+        return [{"user_id": user_id} for user_id in self.ig_user_ids]
+
+    def get_url_params(
+        self, context: Optional[dict], next_page_token: Optional[Any]
+    ) -> Dict[str, Any]:
+        """Add parameters based on report definition."""
+        params = super().get_url_params(context, next_page_token)
+
+        if self.metrics:
+            params["metric"] = ",".join(self.metrics)
+        if self.breakdown:
+            params["breakdown"] = self.breakdown
+        if self.time_period:
+            params["period"] = self.time_period
+        if self.timeframe:
+            params["timeframe"] = self.timeframe
+
+        return params

@@ -10,6 +10,7 @@ from tap_instagram.streams import (
     MediaChildrenStream,
     MediaInsightsStream,
     MediaStream,
+    MediaCommentsStream,
     StoriesStream,
     StoryInsightsStream,
     UserInsights28DayStream,
@@ -17,20 +18,24 @@ from tap_instagram.streams import (
     UserInsightsFollowersStream,
     UserInsightsOnlineFollowersStream,
     UserInsightsWeeklyStream,
+    UserInsightsLifetimeStream,
+    UserInsightsCustomStream,
     UsersStream,
 )
 
 STREAM_TYPES = [
-    MediaChildrenStream,
+    #MediaChildrenStream,
     MediaInsightsStream,
     MediaStream,
-    StoriesStream,
-    StoryInsightsStream,
-    UserInsights28DayStream,
+    MediaCommentsStream,
+    #StoriesStream,
+    #StoryInsightsStream,
+    #UserInsights28DayStream,
     UserInsightsDailyStream,
-    UserInsightsFollowersStream,
-    UserInsightsOnlineFollowersStream,
-    UserInsightsWeeklyStream,
+    UserInsightsLifetimeStream,
+    #UserInsightsFollowersStream,
+    #UserInsightsOnlineFollowersStream,
+    #UserInsightsWeeklyStream,
     UsersStream,
 ]
 
@@ -74,6 +79,54 @@ class TapInstagram(Tap):
             th.StringType,
             description="A user access token",
         ),
+        th.Property(
+            "user_insight_reports",
+            th.ArrayType(
+                th.ObjectType(
+                    th.Property(
+                        "name",
+                        th.StringType,
+                        description="Unique name for the custom report (used as stream name)",
+                        required=True,
+                    ),
+                    th.Property(
+                        "metrics",
+                        th.ArrayType(th.StringType),
+                        description="List of metrics to include in the report",
+                        required=True,
+                    ),
+                    th.Property(
+                        "time_period",
+                        th.StringType,
+                        description="Time period for the report (e.g., day, week, month, lifetime, custom)",
+                        default="day",
+                    ),
+                    th.Property(
+                        "timeframe",
+                        th.StringType,
+                        description="Optional timeframe (e.g. last_7_days, last_30_days)",
+                    ),
+                    th.Property(
+                        "start_date",
+                        th.StringType,
+                        description="Start date for custom period (YYYY-MM-DD)",
+                    ),
+                    th.Property(
+                        "end_date",
+                        th.StringType,
+                        description="End date for custom period (YYYY-MM-DD)",
+                    ),
+                    th.Property(
+                        "fields",
+                        th.ArrayType(th.StringType),
+                        description="Optional list of fields to request from API",
+                        default=[],
+                    ),
+                )
+            ),
+            description="List of custom Instagram insights report definitions.",
+            default=[],
+        ),
     ).to_dict()
 
     @property
@@ -97,4 +150,12 @@ class TapInstagram(Tap):
 
     def discover_streams(self) -> List[Stream]:
         """Return a list of discovered streams."""
-        return [stream_class(tap=self) for stream_class in STREAM_TYPES]
+        streams: List[Stream] = []
+
+        for stream_class in STREAM_TYPES:
+            streams.append(stream_class(tap=self))
+
+        for report_cfg in self.config.get("user_insight_reports", []):
+            streams.append(UserInsightsCustomStream(self, report_cfg))
+
+        return streams
