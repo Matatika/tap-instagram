@@ -36,7 +36,6 @@ class UsersStream(InstagramStream):
         th.Property("ig_id", th.IntegerType),
         th.Property("name", th.StringType),
         th.Property("username", th.StringType),
-        th.Property("biography", th.StringType),
         th.Property("followers_count", th.IntegerType),
         th.Property("media_count", th.IntegerType),
     ).to_dict()
