@@ -58,7 +58,7 @@ class TapInstagram(Tap):
         ),
         th.Property(
             "ig_user_ids",
-            th.ArrayType(th.IntegerType),
+            th.ArrayType(th.StringType),
             required=True,
             description="User IDs of the Instagram accounts to replicate",
         ),
@@ -132,7 +132,7 @@ class TapInstagram(Tap):
     @property
     def access_tokens(self) -> Dict[str, str]:
         return {
-            user_id: self._exchange_token(user_id)
+            int(user_id): self._exchange_token(user_id)
             for user_id in self.config.get("ig_user_ids")
         }
 
