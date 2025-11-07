@@ -1,6 +1,7 @@
 """Stream type classes for tap-instagram."""
 
 from datetime import datetime, timedelta
+import json
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pendulum
@@ -35,6 +36,7 @@ class UsersStream(InstagramStream):
         th.Property("id", th.StringType),
         th.Property("ig_id", th.IntegerType),
         th.Property("name", th.StringType),
+        th.Property("biography", th.StringType),
         th.Property("username", th.StringType),
         th.Property("followers_count", th.IntegerType),
         th.Property("media_count", th.IntegerType),
@@ -800,6 +802,11 @@ class UserInsightsStream(InstagramStream):
             description="",
         ),
         th.Property(
+            "user_id",
+            th.StringType,
+            description="",
+        ),
+        th.Property(
             "name",
             th.StringType,
             description="",
@@ -923,6 +930,17 @@ class UserInsightsStream(InstagramStream):
                                 values["end_time"]
                             ).format("YYYY-MM-DD HH:mm:ss")
                         yield values
+            elif "total_value" in row:
+                total = row["total_value"]
+                item = dict(base_item)
+                item["value"] = total.get("value")
+                # Optionally capture breakdown info
+                breakdowns = total.get("breakdowns")
+                if breakdowns:
+                    item["context"] = json.dumps(breakdowns)
+                # Use current date/time as end_time if not given
+                item["end_time"] = pendulum.now("UTC").format("YYYY-MM-DD HH:mm:ss")
+                yield item
 
 
 class UserInsightsOnlineFollowersStream(UserInsightsStream):
@@ -1034,7 +1052,7 @@ class UserInsightsCustomStream(UserInsightsStream):
         self.metrics = report_config["metrics"]
         self.time_period = report_config.get("time_period", "day")
         self.timeframe = report_config.get("timeframe")
-        self.fields = report_config.get("fields", [])
+        self.metric_type = report_config.get("metric_type")
         self.ig_user_ids = self.config.get("ig_user_ids", [])
         self.breakdown = report_config.get("breakdown")
 
@@ -1053,9 +1071,11 @@ class UserInsightsCustomStream(UserInsightsStream):
             params["metric"] = ",".join(self.metrics)
         if self.breakdown:
             params["breakdown"] = self.breakdown
+        if self.metric_type:
+            params["metric_type"] = self.metric_type
         if self.time_period:
             params["period"] = self.time_period
         if self.timeframe:
             params["timeframe"] = self.timeframe
-
+        self.logger.info(f"URL params: {params}")
         return params

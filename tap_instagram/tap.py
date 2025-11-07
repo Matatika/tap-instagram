@@ -80,7 +80,7 @@ class TapInstagram(Tap):
             description="A user access token",
         ),
         th.Property(
-            "user_insight_reports",
+            "custom_user_insight_reports",
             th.ArrayType(
                 th.ObjectType(
                     th.Property(
@@ -93,6 +93,12 @@ class TapInstagram(Tap):
                         "metrics",
                         th.ArrayType(th.StringType),
                         description="List of metrics to include in the report",
+                        required=True,
+                    ),
+                    th.Property(
+                        "metric_type",
+                        th.StringType,
+                        description="Designates if you want the responses aggregated by time period or as a simple total",
                         required=True,
                     ),
                     th.Property(
@@ -117,9 +123,9 @@ class TapInstagram(Tap):
                         description="End date for custom period (YYYY-MM-DD)",
                     ),
                     th.Property(
-                        "fields",
+                        "breakdown",
                         th.ArrayType(th.StringType),
-                        description="Optional list of fields to request from API",
+                        description="Designates how to break down result set into subsets",
                         default=[],
                     ),
                 )
@@ -155,7 +161,7 @@ class TapInstagram(Tap):
         for stream_class in STREAM_TYPES:
             streams.append(stream_class(tap=self))
 
-        for report_cfg in self.config.get("user_insight_reports", []):
+        for report_cfg in self.config.get("custom_user_insight_reports", []):
             streams.append(UserInsightsCustomStream(self, report_cfg))
 
         return streams
