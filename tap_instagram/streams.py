@@ -408,9 +408,39 @@ class MediaCommentsStream(MediaStream):
         "timestamp",
         "username",
         "like_count",
-        "replies",
-        "media_type"
+        "replies"
     ]
+    schema = th.PropertiesList(
+        th.Property(
+            "id",
+            th.StringType,
+            description="Media ID.",
+        ),
+        th.Property(
+            "user_id",
+            th.StringType,
+            description="Instagram user ID.",
+        ),
+        th.Property(
+            "replies",
+            th.ObjectType(),
+        ), 
+        th.Property(
+            "like_count",
+            th.IntegerType,
+            description="Count of likes on the media. Excludes likes on album child media and likes on promoted posts "
+            "created from the media. Includes replies on comments.",
+        ),
+        th.Property(
+            "text",
+            th.StringType,
+        ),
+        th.Property(
+            "timestamp",
+            th.DateTimeType,
+            description="ISO 8601 formatted creation date in UTC (default is UTC ±00:00)",
+        ),
+    ).to_dict()
 
     def parse_response(self, response: requests.Response) -> Iterable[dict]:
         for row in extract_jsonpath(self.records_jsonpath, input=response.json()):
@@ -434,6 +464,11 @@ class MediaInsightsStream(InstagramStream):
     schema = th.PropertiesList(
         th.Property(
             "id",
+            th.StringType,
+            description="",
+        ),
+        th.Property(
+            "user_id",
             th.StringType,
             description="",
         ),
@@ -490,7 +525,6 @@ class MediaInsightsStream(InstagramStream):
                 return [
                     "comments",
                     "likes",
-                    "plays",
                     "reach",
                     "saved",
                     "shares",
@@ -504,15 +538,12 @@ class MediaInsightsStream(InstagramStream):
                     "reach",
                     "saved",
                 ]
-                if media_type == "VIDEO":
-                    metrics.append("video_views")
                 return metrics
         elif media_type == "CAROUSEL_ALBUM":
             return [
                 "total_interactions",
                 "reach",
                 "saved",
-                "video_views",
             ]
         else:
             raise ValueError(
@@ -527,7 +558,7 @@ class MediaInsightsStream(InstagramStream):
             context["media_type"], context["media_product_type"]
         )
         params["metric"] = ",".join(metrics)
-        params["period"] = "days_28"
+        params["period"] = "lifetime"  # The other periods mentioned in the documentation are not working.
         return params
 
     def validate_response(self, response: requests.Response) -> None:
@@ -754,7 +785,7 @@ class UserInsightsStream(InstagramStream):
     records_jsonpath = "$.data[*]"
     has_pagination = True
     min_start_date: datetime = pendulum.now("UTC").subtract(years=2).add(days=1)
-    max_end_date: datetime = pendulum.today("UTC").subtract(days=1)
+    max_end_date: datetime = pendulum.today("UTC")
     max_time_window: timedelta = pendulum.duration(days=30)
     time_period: str  # TODO: Use an Enum type instead
     metrics: List[str]
