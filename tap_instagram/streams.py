@@ -1,6 +1,7 @@
 """Stream type classes for tap-instagram."""
 
 from datetime import datetime, timedelta
+import json
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pendulum
@@ -35,8 +36,8 @@ class UsersStream(InstagramStream):
         th.Property("id", th.StringType),
         th.Property("ig_id", th.IntegerType),
         th.Property("name", th.StringType),
-        th.Property("username", th.StringType),
         th.Property("biography", th.StringType),
+        th.Property("username", th.StringType),
         th.Property("followers_count", th.IntegerType),
         th.Property("media_count", th.IntegerType),
     ).to_dict()
@@ -198,9 +199,9 @@ class MediaStream(InstagramStream):
 
     def get_child_context(self, record: dict, context: Optional[dict]) -> dict:
         return {
-            # "user_id": context["user_id"],
+            "user_id": context["user_id"],
             "media_id": record["id"],
-            "media_type": record["media_type"],
+            "media_type": record.get("media_type"),
             # media_product_type not present for carousel children media
             "media_product_type": record.get("media_product_type"),
         }
@@ -392,6 +393,64 @@ class MediaChildrenStream(MediaStream):
                 )
             yield row
 
+class MediaCommentsStream(MediaStream):
+    """Define custom stream."""
+
+    name = "media_comments"
+    parent_stream_type = MediaStream
+    state_partitioning_keys = ["user_id"]
+    path = "/{media_id}/comments"  # media_id is populated using child context keys from MediaStream
+    # caption, comments_count, is_comment_enabled, like_count, media_product_type
+    # not available on album children
+    # TODO: Is media_product_type available on children of some media types? carousel vs album children?
+    # https://developers.facebook.com/docs/instagram-api/reference/ig-media#fields
+    fields = [
+        "id",
+        "text",
+        "timestamp",
+        "username",
+        "like_count",
+        "replies"
+    ]
+    schema = th.PropertiesList(
+        th.Property(
+            "id",
+            th.StringType,
+            description="Media ID.",
+        ),
+        th.Property(
+            "user_id",
+            th.StringType,
+            description="Instagram user ID.",
+        ),
+        th.Property(
+            "replies",
+            th.ObjectType(),
+        ), 
+        th.Property(
+            "like_count",
+            th.IntegerType,
+            description="Count of likes on the media. Excludes likes on album child media and likes on promoted posts "
+            "created from the media. Includes replies on comments.",
+        ),
+        th.Property(
+            "text",
+            th.StringType,
+        ),
+        th.Property(
+            "timestamp",
+            th.DateTimeType,
+            description="ISO 8601 formatted creation date in UTC (default is UTC ±00:00)",
+        ),
+    ).to_dict()
+
+    def parse_response(self, response: requests.Response) -> Iterable[dict]:
+        for row in extract_jsonpath(self.records_jsonpath, input=response.json()):
+            if "timestamp" in row:
+                row["timestamp"] = pendulum.parse(row["timestamp"]).format(
+                    "YYYY-MM-DD HH:mm:ss"
+                )
+            yield row
 
 class MediaInsightsStream(InstagramStream):
     """Define custom stream."""
@@ -407,6 +466,11 @@ class MediaInsightsStream(InstagramStream):
     schema = th.PropertiesList(
         th.Property(
             "id",
+            th.StringType,
+            description="",
+        ),
+        th.Property(
+            "user_id",
             th.StringType,
             description="",
         ),
@@ -454,7 +518,6 @@ class MediaInsightsStream(InstagramStream):
             if media_product_type == "STORY":
                 return [
                     "exits",
-                    "impressions",
                     "reach",
                     "replies",
                     "taps_forward",
@@ -464,7 +527,6 @@ class MediaInsightsStream(InstagramStream):
                 return [
                     "comments",
                     "likes",
-                    "plays",
                     "reach",
                     "saved",
                     "shares",
@@ -473,20 +535,17 @@ class MediaInsightsStream(InstagramStream):
             else:  # media_product_type is "AD" or "FEED"
                 metrics = [
                     "total_interactions",
-                    "impressions",
+                    "likes",
+                    "comments",
                     "reach",
                     "saved",
                 ]
-                if media_type == "VIDEO":
-                    metrics.append("video_views")
                 return metrics
         elif media_type == "CAROUSEL_ALBUM":
             return [
                 "total_interactions",
-                "impressions",
                 "reach",
                 "saved",
-                "video_views",
             ]
         else:
             raise ValueError(
@@ -501,6 +560,7 @@ class MediaInsightsStream(InstagramStream):
             context["media_type"], context["media_product_type"]
         )
         params["metric"] = ",".join(metrics)
+        params["period"] = "lifetime"  # The other periods mentioned in the documentation are not working.
         return params
 
     def validate_response(self, response: requests.Response) -> None:
@@ -727,16 +787,22 @@ class UserInsightsStream(InstagramStream):
     records_jsonpath = "$.data[*]"
     has_pagination = True
     min_start_date: datetime = pendulum.now("UTC").subtract(years=2).add(days=1)
-    max_end_date: datetime = pendulum.today("UTC").subtract(days=1)
+    max_end_date: datetime = pendulum.today("UTC")
     max_time_window: timedelta = pendulum.duration(days=30)
     time_period: str  # TODO: Use an Enum type instead
     metrics: List[str]
+    metric_type = "total_value"
 
     # Optionally, you may also use `schema_filepath` in place of `schema`:
     # schema_filepath = SCHEMAS_DIR / "users.json"
     schema = th.PropertiesList(
         th.Property(
             "id",
+            th.StringType,
+            description="",
+        ),
+        th.Property(
+            "user_id",
             th.StringType,
             description="",
         ),
@@ -796,11 +862,13 @@ class UserInsightsStream(InstagramStream):
 
         Returns: DateTime objects for "since" and "until"
         """
+        two_years_ago = pendulum.now().subtract(years=1)
+        min_since = max(min_since, two_years_ago)
         try:
             since = min(max(self.get_starting_timestamp(context), min_since), max_until)
             window_end = min(
                 self.get_replication_key_signpost(context),
-                pendulum.instance(since).add(seconds=max_time_window.seconds),
+                pendulum.instance(since).add(seconds=max_time_window.total_seconds()),
             )
         # seeing cases where self.get_starting_timestamp() is null
         # possibly related to target-bigquery pushing malformed state - https://gitlab.com/meltano/sdk/-/issues/300
@@ -819,6 +887,7 @@ class UserInsightsStream(InstagramStream):
             return params
         params["metric"] = ",".join(self.metrics)
         params["period"] = self.time_period
+        params["metric_type"] = self.metric_type
 
         if self.has_pagination:
             since, until = self._fetch_time_based_pagination_range(
@@ -861,6 +930,17 @@ class UserInsightsStream(InstagramStream):
                                 values["end_time"]
                             ).format("YYYY-MM-DD HH:mm:ss")
                         yield values
+            elif "total_value" in row:
+                total = row["total_value"]
+                item = dict(base_item)
+                item["value"] = total.get("value")
+                # Optionally capture breakdown info
+                breakdowns = total.get("breakdowns")
+                if breakdowns:
+                    item["context"] = json.dumps(breakdowns)
+                # Use current date/time as end_time if not given
+                item["end_time"] = pendulum.now("UTC").format("YYYY-MM-DD HH:mm:ss")
+                yield item
 
 
 class UserInsightsOnlineFollowersStream(UserInsightsStream):
@@ -900,16 +980,43 @@ class UserInsightsDailyStream(UserInsightsStream):
 
     name = "user_insights_daily"
     metrics = [
-        "email_contacts",
-        "get_directions_clicks",
-        "impressions",
-        "phone_call_clicks",
-        "profile_views",
-        "reach",
-        "text_message_clicks",
-        "website_clicks",
+        "reach"
+        , "website_clicks"
+        , "profile_views"
+        , "accounts_engaged"
+        , "total_interactions"
+        , "likes"
+        , "comments"
+        , "shares"
+        , "saves"
+        , "replies"
+        , "follows_and_unfollows"
+        , "profile_links_taps"
+        , "views"
+        , "content_views"
     ]
     time_period = "day"
+
+class UserInsightsLifetimeStream(UserInsightsStream):
+    """Define custom stream."""
+
+    name = "user_insights_lifetime"
+    metrics = [
+        "engaged_audience_demographics"
+        ,"follower_demographics"
+    ]
+    time_period = "lifetime"
+    timeframe = "this_month"
+    breakdown = "age"
+
+    def get_url_params(self, context, next_page_token):
+        """Return a dictionary of URL query parameters."""
+        params = super().get_url_params(context, next_page_token)
+        # Add the new parameter
+        params["timeframe"] = self.timeframe
+        params["breakdown"] = self.breakdown
+        return params
+
 
 
 class UserInsightsWeeklyStream(UserInsightsStream):
@@ -932,3 +1039,43 @@ class UserInsights28DayStream(UserInsightsStream):
         "reach",
     ]
     time_period = "days_28"
+
+class UserInsightsCustomStream(UserInsightsStream):
+    """Define custom stream."""
+
+    def __init__(self, tap, report_config: Dict[str, Any]):
+        self.name = report_config["name"]
+        super().__init__(tap)
+        self.report_config = report_config
+
+        # Config-driven attributes
+        self.metrics = report_config["metrics"]
+        self.time_period = report_config.get("time_period", "day")
+        self.timeframe = report_config.get("timeframe")
+        self.metric_type = report_config.get("metric_type")
+        self.ig_user_ids = self.config.get("ig_user_ids", [])
+        self.breakdown = report_config.get("breakdown")
+
+    @property
+    def partitions(self) -> Optional[List[dict]]:
+        """One partition per Instagram user ID."""
+        return [{"user_id": user_id} for user_id in self.ig_user_ids]
+
+    def get_url_params(
+        self, context: Optional[dict], next_page_token: Optional[Any]
+    ) -> Dict[str, Any]:
+        """Add parameters based on report definition."""
+        params = super().get_url_params(context, next_page_token)
+
+        if self.metrics:
+            params["metric"] = ",".join(self.metrics)
+        if self.breakdown:
+            params["breakdown"] = self.breakdown
+        if self.metric_type:
+            params["metric_type"] = self.metric_type
+        if self.time_period:
+            params["period"] = self.time_period
+        if self.timeframe:
+            params["timeframe"] = self.timeframe
+        self.logger.info(f"URL params: {params}")
+        return params
