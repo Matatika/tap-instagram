@@ -28,7 +28,11 @@ class UsersStream(InstagramStream):
         "username",
         "biography",
         "followers_count",
+        "follows_count",
         "media_count",
+        "is_published",
+        "profile_picture_url",
+        "website",
     ]
     # Optionally, you may also use `schema_filepath` in place of `schema`:
     # schema_filepath = SCHEMAS_DIR / "users.json"
@@ -40,6 +44,10 @@ class UsersStream(InstagramStream):
         th.Property("username", th.StringType),
         th.Property("followers_count", th.IntegerType),
         th.Property("media_count", th.IntegerType),
+        th.Property("follows_count", th.IntegerType),
+        th.Property("is_published", th.BooleanType),
+        th.Property("profile_picture_url", th.StringType),
+        th.Property("website", th.StringType),
     ).to_dict()
 
     @property
@@ -393,6 +401,7 @@ class MediaChildrenStream(MediaStream):
                 )
             yield row
 
+
 class MediaCommentsStream(MediaStream):
     """Define custom stream."""
 
@@ -410,7 +419,9 @@ class MediaCommentsStream(MediaStream):
         "timestamp",
         "username",
         "like_count",
-        "replies"
+        "replies",
+        "hidden",
+        "owner",
     ]
     schema = th.PropertiesList(
         th.Property(
@@ -426,7 +437,7 @@ class MediaCommentsStream(MediaStream):
         th.Property(
             "replies",
             th.ObjectType(),
-        ), 
+        ),
         th.Property(
             "like_count",
             th.IntegerType,
@@ -442,6 +453,27 @@ class MediaCommentsStream(MediaStream):
             th.DateTimeType,
             description="ISO 8601 formatted creation date in UTC (default is UTC ±00:00)",
         ),
+        th.Property(
+            "hidden",
+            th.BooleanType,
+        ),
+        th.Property(
+            "owner",
+            th.ObjectType(
+                th.Property(
+                    "id",
+                    th.StringType,
+                    description="ID of Instagram user who created the media.",
+                ),
+                th.Property(
+                    "username",
+                    th.StringType,
+                    description="Username of Instagram user who created the media.",
+                ),
+            ),
+            description="ID of Instagram user who created the media. Only returned if the app user making the query "
+            "also created the media, otherwise username field will be returned instead.",
+        ),
     ).to_dict()
 
     def parse_response(self, response: requests.Response) -> Iterable[dict]:
@@ -451,6 +483,7 @@ class MediaCommentsStream(MediaStream):
                     "YYYY-MM-DD HH:mm:ss"
                 )
             yield row
+
 
 class MediaInsightsStream(InstagramStream):
     """Define custom stream."""
@@ -467,47 +500,90 @@ class MediaInsightsStream(InstagramStream):
         th.Property(
             "id",
             th.StringType,
-            description="",
+            description="Unique media ID from Instagram.",
         ),
+        # Reel metrics
         th.Property(
-            "user_id",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "name",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "period",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "end_time",
-            th.DateTimeType,
-            description="",
-        ),
-        th.Property(
-            "context",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "value",
+            "reel_comments",
             th.IntegerType,
-            description="",
+            description="Number of comments on the reel.",
         ),
         th.Property(
-            "title",
-            th.StringType,
-            description="",
+            "reel_likes",
+            th.IntegerType,
+            description="Number of likes on the reel.",
         ),
         th.Property(
-            "description",
-            th.StringType,
-            description="",
+            "reel_plays",
+            th.IntegerType,
+            description="Number of plays for the reel.",
+        ),
+        th.Property(
+            "reel_reach",
+            th.IntegerType,
+            description="Number of unique accounts that viewed the reel.",
+        ),
+        th.Property(
+            "reel_saved",
+            th.IntegerType,
+            description="Number of times the reel was saved.",
+        ),
+        th.Property(
+            "reel_shares",
+            th.IntegerType,
+            description="Number of times the reel was shared.",
+        ),
+        th.Property(
+            "reel_total_interactions",
+            th.IntegerType,
+            description="Total interactions on the reel.",
+        ),
+        # Story metrics
+        th.Property(
+            "story_exits",
+            th.IntegerType,
+            description="Number of exits from the story.",
+        ),
+        th.Property(
+            "story_impressions",
+            th.IntegerType,
+            description="Total number of views for the story.",
+        ),
+        th.Property(
+            "story_reach",
+            th.IntegerType,
+            description="Unique accounts that viewed the story.",
+        ),
+        th.Property(
+            "story_replies",
+            th.IntegerType,
+            description="Number of replies to the story.",
+        ),
+        th.Property(
+            "story_taps_back",
+            th.IntegerType,
+            description="Number of backward taps on the story.",
+        ),
+        th.Property(
+            "story_taps_forward",
+            th.IntegerType,
+            description="Number of forward taps on the story.",
+        ),
+        # Feed (video/photo) metrics
+        th.Property(
+            "video_photo_engagement",
+            th.IntegerType,
+            description="Total engagement on the video or photo post.",
+        ),
+        th.Property(
+            "video_photo_impressions",
+            th.IntegerType,
+            description="Number of times the video or photo was seen.",
+        ),
+        th.Property(
+            "video_photo_reach",
+            th.IntegerType,
+            description="Unique accounts that viewed the video or photo.",
         ),
     ).to_dict()
 
@@ -518,6 +594,7 @@ class MediaInsightsStream(InstagramStream):
             if media_product_type == "STORY":
                 return [
                     "exits",
+                    "impressions",
                     "reach",
                     "replies",
                     "taps_forward",
@@ -527,6 +604,7 @@ class MediaInsightsStream(InstagramStream):
                 return [
                     "comments",
                     "likes",
+                    "plays"
                     "reach",
                     "saved",
                     "shares",
@@ -560,74 +638,85 @@ class MediaInsightsStream(InstagramStream):
             context["media_type"], context["media_product_type"]
         )
         params["metric"] = ",".join(metrics)
-        params["period"] = "lifetime"  # The other periods mentioned in the documentation are not working.
+        params["period"] = (
+            "lifetime"  # The other periods mentioned in the documentation are not working.
+        )
         return params
 
     def validate_response(self, response: requests.Response) -> None:
-        if response.json().get("error", {}).get(
-            "error_user_title"
-        ) == "Media posted before business account conversion" or "(#10) Not enough viewers for the media to show insights" in str(
-            response.json().get("error", {}).get("message")
+        resp_json = response.json()
+        if (
+            resp_json.get("error", {}).get("error_user_title")
+            == "Media posted before business account conversion"
+            or "(#10) Not enough viewers for the media to show insights"
+            in str(response.json().get("error", {}).get("message"))
         ):
             self.logger.warning(f"Skipping: {response.json()['error']}")
             return
         super().validate_response(response)
 
-    def parse_response(self, response: requests.Response) -> Iterable[dict]:
+    def parse_response(
+        self, response: requests.Response
+    ) -> Iterable[dict]:
         resp_json = response.json()
-        # Handle the specific case where FB returns error because media was posted before business acct creation
-        # TODO: Refactor to raise a specific error in validate_response and handle that instead
-        if resp_json.get("error", {}).get(
-            "error_user_title"
-        ) == "Media posted before business account conversion" or "(#10) Not enough viewers for the media to show insights" in str(
-            resp_json.get("error", {}).get("message")
+
+        # Handle API error cases gracefully
+        if (
+            resp_json.get("error", {}).get("error_user_title")
+            == "Media posted before business account conversion"
+            or "(#10) Not enough viewers for the media to show insights"
+            in str(resp_json.get("error", {}).get("message"))
         ):
+            self.logger.warning(f"Skipping media due to no insights: {resp_json.get('error')}")
             return
-        for row in resp_json["data"]:
-            base_item = {
-                "name": row["name"],
-                "period": row["period"],
-                "title": row["title"],
-                "id": row["id"],
-                "description": row["description"],
-            }
-            if "values" in row:
-                for values in row["values"]:
-                    if isinstance(values["value"], dict):
-                        for key, value in values["value"].items():
-                            item = {
-                                "context": key,
-                                "value": value,
-                                "end_time": pendulum.parse(values["end_time"]).format(
-                                    "YYYY-MM-DD HH:mm:ss"
-                                ),
-                            }
-                            item.update(base_item)
-                            yield item
-                    else:
-                        values.update(base_item)
-                        if "end_time" in values:
-                            values["end_time"] = pendulum.parse(
-                                values["end_time"]
-                            ).format("YYYY-MM-DD HH:mm:ss")
-                        yield values
 
+        # Instagram sometimes wraps a single record directly in "data"
+        data_items = resp_json.get("data")
+        if not data_items:
+            if "name" in resp_json:
+                data_items = [resp_json]
+            else:
+                return
 
-# class MediaInsightsStream(BaseMediaInsightsStream):
-#     """Define custom stream."""
-#
-#     name = "media_insights"
-#     parent_stream_type = MediaStream
-#     state_partitioning_keys = ["user_id"]
+        record = {}
 
+        for metric in data_items:
+            # Example: "18077067653335581/insights/comments/lifetime"
+            insight_id = metric.get("id")
+            if not insight_id:
+                continue
 
-# Insights not available for children media objects
-# https://developers.facebook.com/docs/instagram-api/reference/ig-media/insights#limitations
-# class MediaChildrenInsightsStream(BaseMediaInsightsStream):
-#     """Define custom stream."""
-#     name = "media_children_insights"
-#     parent_stream_type = MediaChildrenStream
+            # Extract the media_id portion before the first "/"
+            media_id = insight_id.split("/")[0]
+            record["id"] = media_id
 
+            metric_name = metric.get("name", "").lower()
+            values = metric.get("values", [])
+            if not values:
+                continue
+
+            val = values[0].get("value")
+            desc = (metric.get("description") or "").lower()
+            if "reel" in desc:
+                prefix = "reel_"
+            elif "story" in desc:
+                prefix = "story_"
+            elif "photo" in desc or "video" in desc or "post" in desc:
+                prefix = "video_photo_"
+            else:
+                prefix = ""
+
+            key_name = f"{prefix}{metric_name}"
+
+            # Handle nested dicts
+            if isinstance(val, dict):
+                for subkey, subval in val.items():
+                    record[f"{key_name}_{subkey}"] = subval
+            else:
+                record[key_name] = val
+
+        if record:
+            yield record
 
 class StoryInsightsStream(InstagramStream):
     """Define custom stream."""
@@ -730,10 +819,11 @@ class StoryInsightsStream(InstagramStream):
         return params
 
     def validate_response(self, response: requests.Response) -> None:
-        if response.json().get("error", {}).get(
-            "error_user_title"
-        ) == "Media posted before business account conversion" or "(#10) Not enough viewers for the media to show insights" in str(
-            response.json().get("error", {}).get("message")
+        if (
+            response.json().get("error", {}).get("error_user_title")
+            == "Media posted before business account conversion"
+            or "(#10) Not enough viewers for the media to show insights"
+            in str(response.json().get("error", {}).get("message"))
         ):
             self.logger.warning(f"Skipping: {response.json()['error']}")
             return
@@ -743,10 +833,11 @@ class StoryInsightsStream(InstagramStream):
         resp_json = response.json()
         # Handle the specific case where FB returns error because media was posted before business acct creation
         # TODO: Refactor to raise a specific error in validate_response and handle that instead
-        if resp_json.get("error", {}).get(
-            "error_user_title"
-        ) == "Media posted before business account conversion" or "(#10) Not enough viewers for the media to show insights" in str(
-            resp_json.get("error", {}).get("message")
+        if (
+            resp_json.get("error", {}).get("error_user_title")
+            == "Media posted before business account conversion"
+            or "(#10) Not enough viewers for the media to show insights"
+            in str(resp_json.get("error", {}).get("message"))
         ):
             return
         for row in resp_json["data"]:
@@ -793,55 +884,9 @@ class UserInsightsStream(InstagramStream):
     metrics: List[str]
     metric_type = "total_value"
 
-    # Optionally, you may also use `schema_filepath` in place of `schema`:
-    # schema_filepath = SCHEMAS_DIR / "users.json"
-    schema = th.PropertiesList(
-        th.Property(
-            "id",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "user_id",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "name",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "period",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "end_time",
-            th.DateTimeType,
-            description="",
-        ),
-        th.Property(
-            "context",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "value",
-            th.IntegerType,
-            description="",
-        ),
-        th.Property(
-            "title",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "description",
-            th.StringType,
-            description="",
-        ),
-    ).to_dict()
+    def __init__(self, tap, **kwargs):
+        super().__init__(tap, **kwargs)
+        # dynamically build schema based on metrics list
 
     def _fetch_time_based_pagination_range(
         self,
@@ -902,45 +947,52 @@ class UserInsightsStream(InstagramStream):
 
     def parse_response(self, response: requests.Response) -> Iterable[dict]:
         resp_json = response.json()
-        for row in resp_json["data"]:
-            base_item = {
-                "name": row["name"],
-                "period": row["period"],
-                "title": row["title"],
-                "id": row["id"],
-                "description": row["description"],
-            }
-            if "values" in row:
-                for values in row["values"]:
-                    if isinstance(values["value"], dict):
-                        for key, value in values["value"].items():
-                            item = {
-                                "context": key,
-                                "value": value,
-                                "end_time": pendulum.parse(values["end_time"]).format(
-                                    "YYYY-MM-DD HH:mm:ss"
-                                ),
-                            }
-                            item.update(base_item)
-                            yield item
-                    else:
-                        values.update(base_item)
-                        if "end_time" in values:
-                            values["end_time"] = pendulum.parse(
-                                values["end_time"]
-                            ).format("YYYY-MM-DD HH:mm:ss")
-                        yield values
-            elif "total_value" in row:
-                total = row["total_value"]
-                item = dict(base_item)
-                item["value"] = total.get("value")
-                # Optionally capture breakdown info
-                breakdowns = total.get("breakdowns")
-                if breakdowns:
-                    item["context"] = json.dumps(breakdowns)
-                # Use current date/time as end_time if not given
-                item["end_time"] = pendulum.now("UTC").format("YYYY-MM-DD HH:mm:ss")
-                yield item
+        data = resp_json.get("data", [])
+        if not data:
+            return
+
+        #building a dict indexed by end_time so all metrics for that date combine
+        rows_by_date = {}
+
+        for metric in data:
+            metric_name = metric["name"].lower()
+            metric_id = metric.get("id", "")
+            user_id = metric_id.split("/")[0] if "/" in metric_id else None
+
+            # Handle case with `values` list
+            if "values" in metric:
+                for val in metric["values"]:
+                    end_time = val.get("end_time")
+                    if not end_time:
+                        continue
+                    end_time_fmt = pendulum.parse(end_time).format("YYYY-MM-DD HH:mm:ss")
+                    value = val.get("value")
+                    row = rows_by_date.setdefault(
+                        end_time_fmt,
+                        {"id": user_id, "user_id": user_id, "end_time": end_time_fmt},
+                    )
+                    row[metric_name] = value
+
+            # Handle case with `total_value`
+            elif "total_value" in metric:
+                total_obj = metric["total_value"]
+                total_val = total_obj.get("value")
+                # if it's a daily metric with total_value, still give it a date
+                end_time_fmt = pendulum.now("UTC").format("YYYY-MM-DD HH:mm:ss")
+                row = rows_by_date.setdefault(
+                    end_time_fmt,
+                    {"id": user_id, "user_id": user_id, "end_time": end_time_fmt},
+                )
+                if "breakdowns" in total_obj:
+                    for breakdown in total_obj["breakdowns"]:
+                        dims = "_".join(breakdown.get("dimension_values", []))
+                        row[f"{metric_name}_{dims}"] = breakdown.get("value")
+                    row[metric_name] = total_val
+                row[metric_name] = total_val
+
+        # Yield all combined rows
+        for row in rows_by_date.values():
+            yield row
 
 
 class UserInsightsOnlineFollowersStream(UserInsightsStream):
@@ -997,17 +1049,76 @@ class UserInsightsDailyStream(UserInsightsStream):
     ]
     time_period = "day"
 
+    def __init__(self, tap, **kwargs):
+        metric_props = [
+            th.Property(metric.lower(), th.IntegerType)
+            for metric in self.metrics
+        ]
+        base_props = [
+            th.Property("id", th.StringType),
+            th.Property("user_id", th.StringType),
+            th.Property("end_time", th.DateTimeType),
+        ]
+        schema = th.PropertiesList(*base_props, *metric_props).to_dict()
+
+        super().__init__(tap=tap, schema=schema, **kwargs)
+
+
 class UserInsightsLifetimeStream(UserInsightsStream):
     """Define custom stream."""
 
     name = "user_insights_lifetime"
-    metrics = [
-        "engaged_audience_demographics"
-        ,"follower_demographics"
-    ]
+    metrics = ["engaged_audience_demographics", "follower_demographics"]
     time_period = "lifetime"
     timeframe = "this_month"
     breakdown = "age"
+    schema = th.PropertiesList(
+        th.Property(
+            "id",
+            th.StringType,
+            description="",
+        ),
+        th.Property(
+            "user_id",
+            th.StringType,
+            description="",
+        ),
+        th.Property(
+            "metric",
+            th.StringType,
+            description="",
+        ),
+        th.Property(
+            "period",
+            th.StringType,
+            description="",
+        ),
+        th.Property(
+            "end_time",
+            th.DateTimeType,
+            description="",
+        ),
+        th.Property(
+            "breakdowns",
+            th.StringType,
+            description="",
+        ),
+        th.Property(
+            "value",
+            th.StringType,
+            description="",
+        ),
+        th.Property(
+            "title",
+            th.StringType,
+            description="",
+        ),
+        th.Property(
+            "description",
+            th.StringType,
+            description="",
+        ),
+    ).to_dict()
 
     def get_url_params(self, context, next_page_token):
         """Return a dictionary of URL query parameters."""
@@ -1016,7 +1127,28 @@ class UserInsightsLifetimeStream(UserInsightsStream):
         params["timeframe"] = self.timeframe
         params["breakdown"] = self.breakdown
         return params
-
+    
+    def parse_response(self, response: requests.Response) -> Iterable[dict]:
+        resp_json = response.json()
+        for row in resp_json["data"]:
+            base_item = {
+                "metric": row["name"],
+                "period": row["period"],
+                "title": row["title"],
+                "id": row["id"],
+                "description": row["description"],
+            }
+            if "total_value" in row:
+                total = row["total_value"]
+                item = dict(base_item)
+                item["value"] = total.get("value")
+                breakdowns = total.get("breakdowns")
+                if breakdowns:
+                    item["breakdowns"] = json.dumps(breakdowns)
+                # Use current date/time as end_time if not given
+                item["end_time"] = pendulum.now("UTC").format("YYYY-MM-DD HH:mm:ss")
+                yield item
+    
 
 
 class UserInsightsWeeklyStream(UserInsightsStream):
@@ -1040,21 +1172,33 @@ class UserInsights28DayStream(UserInsightsStream):
     ]
     time_period = "days_28"
 
+
 class UserInsightsCustomStream(UserInsightsStream):
     """Define custom stream."""
 
-    def __init__(self, tap, report_config: Dict[str, Any]):
-        self.name = report_config["name"]
-        super().__init__(tap)
+    def __init__(self, tap, report_config: Dict[str, Any],**kwargs):
+        
         self.report_config = report_config
-
-        # Config-driven attributes
-        self.metrics = report_config["metrics"]
+        self.name = report_config["name"]
+        self.metrics = report_config.get("metrics", [])
         self.time_period = report_config.get("time_period", "day")
         self.timeframe = report_config.get("timeframe")
-        self.metric_type = report_config.get("metric_type")
-        self.ig_user_ids = self.config.get("ig_user_ids", [])
+        self.metric_type = report_config.get("metric_type", "total_value")
         self.breakdown = report_config.get("breakdown")
+        self.ig_user_ids = tap.config.get("ig_user_ids", [])
+
+        metric_props = [
+            th.Property(metric.lower(), th.IntegerType)
+            for metric in self.metrics
+        ]
+        base_props = [
+            th.Property("id", th.StringType),
+            th.Property("user_id", th.StringType),
+            th.Property("end_time", th.DateTimeType),
+        ]
+        schema = th.PropertiesList(*base_props, *metric_props).to_dict()
+
+        super().__init__(tap=tap, schema=schema, **kwargs)
 
     @property
     def partitions(self) -> Optional[List[dict]]:
