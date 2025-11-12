@@ -604,7 +604,7 @@ class MediaInsightsStream(InstagramStream):
                 return [
                     "comments",
                     "likes",
-                    "plays"
+                    "plays",
                     "reach",
                     "saved",
                     "shares",
