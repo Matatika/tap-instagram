@@ -32,6 +32,7 @@ class UsersStream(InstagramStream):
         "media_count",
         "is_published",
         "profile_picture_url",
+        "has_profile_pic",
         "website",
     ]
     # Optionally, you may also use `schema_filepath` in place of `schema`:
@@ -46,6 +47,7 @@ class UsersStream(InstagramStream):
         th.Property("media_count", th.IntegerType),
         th.Property("follows_count", th.IntegerType),
         th.Property("is_published", th.BooleanType),
+        th.Property("has_profile_pic", th.BooleanType),
         th.Property("profile_picture_url", th.StringType),
         th.Property("website", th.StringType),
     ).to_dict()
@@ -422,6 +424,7 @@ class MediaCommentsStream(MediaStream):
         "replies",
         "hidden",
         "owner",
+        "parent_id"
     ]
     schema = th.PropertiesList(
         th.Property(
@@ -433,6 +436,11 @@ class MediaCommentsStream(MediaStream):
             "user_id",
             th.StringType,
             description="Instagram user ID.",
+        ),
+        th.Property(
+            "parent_id",
+            th.StringType,
+            description = "ID of the parent IG Comment if this comment was created on another IG Comment"
         ),
         th.Property(
             "replies",
@@ -554,6 +562,11 @@ class MediaInsightsStream(InstagramStream):
             th.IntegerType,
             description="Unique accounts that viewed the story.",
         ),
+         th.Property(
+            "story_likes",
+            th.IntegerType,
+            description="Number of likes on the story.",
+        ),
         th.Property(
             "story_replies",
             th.IntegerType,
@@ -585,6 +598,21 @@ class MediaInsightsStream(InstagramStream):
             th.IntegerType,
             description="Unique accounts that viewed the video or photo.",
         ),
+        th.Property(
+            "video_photo_reach",
+            th.IntegerType,
+            description="Unique accounts that viewed the video or photo.",
+        ),
+        th.Property(
+            "likes",
+            th.IntegerType,
+            description="Number of likes post or ad received.",
+        ),
+        th.Property(
+            "comments",
+            th.IntegerType,
+            description="Number of comments post or ad received.",
+        ),
     ).to_dict()
 
     @staticmethod
@@ -595,6 +623,7 @@ class MediaInsightsStream(InstagramStream):
                 return [
                     "exits",
                     "impressions",
+                    "likes",
                     "reach",
                     "replies",
                     "taps_forward",
@@ -700,7 +729,7 @@ class MediaInsightsStream(InstagramStream):
                 prefix = "reel_"
             elif "story" in desc:
                 prefix = "story_"
-            elif "photo" in desc or "video" in desc or "post" in desc:
+            elif "photo" in desc or "video" in desc:
                 prefix = "video_photo_"
             else:
                 prefix = ""
