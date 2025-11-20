@@ -497,7 +497,6 @@ class MediaInsightsStream(InstagramStream):
     """Define custom stream."""
 
     name = "media_insights"
-    path = "/{media_id}/insights"
     parent_stream_type = MediaStream
     state_partitioning_keys = ["user_id"]
     primary_keys = ["id"]
@@ -604,6 +603,21 @@ class MediaInsightsStream(InstagramStream):
             description="Unique accounts that viewed the video or photo.",
         ),
         th.Property(
+            "carousel_album_total_interactions", 
+            th.IntegerType,
+            description="Total interactions on the carousel post.",
+        ),
+        th.Property(
+            "carousel_album_reach",
+            th.IntegerType,
+            description="Unique accounts that viewed the carousel post.",
+        ),
+        th.Property(
+            "carousel_saved",
+            th.IntegerType,
+            description="Number of times the carousel post was saved.",
+        ),
+        th.Property(
             "likes",
             th.IntegerType,
             description="Number of likes post or ad received.",
@@ -616,13 +630,12 @@ class MediaInsightsStream(InstagramStream):
     ).to_dict()
 
     @staticmethod
-    def _metrics_for_media_type(media_type: str, media_product_type: str):
+    def _metrics_for_media_type(self, media_type: str, media_product_type: str):
         # TODO: Define types for these function args
         if media_type in ("IMAGE", "VIDEO"):
             if media_product_type == "STORY":
                 return [
                     "exits",
-                    "impressions",
                     "likes",
                     "reach",
                     "replies",
@@ -649,21 +662,29 @@ class MediaInsightsStream(InstagramStream):
                 return metrics
         elif media_type == "CAROUSEL_ALBUM":
             return [
-                "total_interactions",
                 "reach",
                 "saved",
+                "total_interactions",
             ]
         else:
             raise ValueError(
                 f"media_type from parent record must be one of IMAGE, VIDEO, CAROUSEL_ALBUM, got: {media_type}"
             )
 
+    @property
+    def path(self):
+        api_version = self.config.get("api_version")
+        if api_version:
+            return f"/{api_version}" + "/{media_id}/insights"
+        else:
+            return "/{media_id}/insights"
+    
     def get_url_params(
         self, context: Optional[dict], next_page_token: Optional[Any]
     ) -> Dict[str, Any]:
         params = super().get_url_params(context, next_page_token)
         metrics = self._metrics_for_media_type(
-            context["media_type"], context["media_product_type"]
+            self,context["media_type"], context["media_product_type"]
         )
         params["metric"] = ",".join(metrics)
         params["period"] = (
@@ -731,6 +752,8 @@ class MediaInsightsStream(InstagramStream):
                 prefix = "story_"
             elif "photo" in desc or "video" in desc:
                 prefix = "video_photo_"
+            elif "carousel" in desc:
+                prefix = "carousel_album_"
             else:
                 prefix = ""
 
@@ -900,7 +923,7 @@ class StoryInsightsStream(InstagramStream):
 
 class UserInsightsStream(InstagramStream):
     parent_stream_type = UsersStream
-    path = "/{user_id}/insights"  # user_id is populated using child context keys from UsersStream
+    #path = "/{user_id}/insights"  # user_id is populated using child context keys from UsersStream
     primary_keys = ["id"]
     replication_key = "end_time"
     records_jsonpath = "$.data[*]"
@@ -911,10 +934,19 @@ class UserInsightsStream(InstagramStream):
     time_period: str  # TODO: Use an Enum type instead
     metrics: List[str]
     metric_type = "total_value"
+    breakdowns: List[str]
 
     def __init__(self, tap, **kwargs):
         super().__init__(tap, **kwargs)
         # dynamically build schema based on metrics list
+    
+    @property
+    def path(self) -> str:
+        api_version = self.config.get("api_version")
+        if api_version:
+            return f"/{api_version}" + "/{user_id}/insights"
+        else:
+            return "/{user_id}/insights"
 
     def _fetch_time_based_pagination_range(
         self,
@@ -961,6 +993,8 @@ class UserInsightsStream(InstagramStream):
         params["metric"] = ",".join(self.metrics)
         params["period"] = self.time_period
         params["metric_type"] = self.metric_type
+        if getattr(self, "breakdowns", None):
+            params["breakdowns"] = ",".join(self.breakdowns)
 
         if self.has_pagination:
             since, until = self._fetch_time_based_pagination_range(
@@ -1032,20 +1066,6 @@ class UserInsightsOnlineFollowersStream(UserInsightsStream):
     # TODO: Add note about online_followers seemingly only going back 30 days
 
 
-# class UserInsightsAudienceStream(UserInsightsStream):
-#     """Define custom stream."""
-#
-#     name = "user_insights_audience"
-#     metrics = [
-#         "audience_city",
-#         "audience_country",
-#         "audience_gender_age",
-#         "audience_locale",
-#     ]
-#     time_period = "lifetime"
-#     has_pagination = False
-
-
 class UserInsightsFollowersStream(UserInsightsStream):
     """Define custom stream."""
 
@@ -1055,10 +1075,10 @@ class UserInsightsFollowersStream(UserInsightsStream):
     min_start_date = pendulum.now("UTC").subtract(days=30)
 
 
-class UserInsightsDailyStream(UserInsightsStream):
+class DefaultUserInsightsDailyStream(UserInsightsStream):
     """Define custom stream."""
 
-    name = "user_insights_daily"
+    name = "default_user_insights_daily"
     metrics = [
         "reach"
         , "website_clicks"
@@ -1076,6 +1096,8 @@ class UserInsightsDailyStream(UserInsightsStream):
         , "content_views"
     ]
     time_period = "day"
+    metric_type = "total_value"
+    breakdowns = ["contact_button_type","follow_type","media_product_type"]
 
     def __init__(self, tap, **kwargs):
         metric_props = [
@@ -1092,14 +1114,23 @@ class UserInsightsDailyStream(UserInsightsStream):
         super().__init__(tap=tap, schema=schema, **kwargs)
 
 
-class UserInsightsLifetimeStream(UserInsightsStream):
+class UserInsightsLifetimeStream(InstagramStream):
     """Define custom stream."""
 
     name = "user_insights_lifetime"
+    parent_stream_type = UsersStream
+    primary_keys = ["id","breakdowns"]
+    replication_key = "end_time"
+    records_jsonpath = "$.data[*]"
+    has_pagination = True
+    min_start_date: datetime = pendulum.now("UTC").subtract(years=2).add(days=1)
+    max_end_date: datetime = pendulum.today("UTC")
+    max_time_window: timedelta = pendulum.duration(days=30)
     metrics = ["engaged_audience_demographics", "follower_demographics"]
     time_period = "lifetime"
     timeframe = "this_month"
-    breakdown = "age"
+    breakdowns_list = ["age", "city", "country", "gender"]
+    metric_type = "total_value"
     schema = th.PropertiesList(
         th.Property(
             "id",
@@ -1148,13 +1179,82 @@ class UserInsightsLifetimeStream(UserInsightsStream):
         ),
     ).to_dict()
 
+    def _fetch_time_based_pagination_range(
+        self,
+        context,
+        min_since: datetime,
+        max_until: datetime,
+        max_time_window: timedelta,
+    ) -> Tuple[datetime, datetime]:
+        """
+        Make "since" and "until" pagination timestamps
+        Args:
+            context:
+            min_since: Min datetime for "since" parameter. Defaults to 2 years ago, max historical data
+                       supported for Facebook metrics.
+            max_until: Max datetime for which data is available. Defaults to a day ago.
+            max_time_window: Maximum duration (as a "tiemdelta") between "since" and "until". Default to
+                             30 days, max window supported by Facebook
+
+        Returns: DateTime objects for "since" and "until"
+        """
+        two_years_ago = pendulum.now().subtract(years=1)
+        min_since = max(min_since, two_years_ago)
+        try:
+            since = min(max(self.get_starting_timestamp(context), min_since), max_until)
+            window_end = min(
+                self.get_replication_key_signpost(context),
+                pendulum.instance(since).add(seconds=max_time_window.total_seconds()),
+            )
+        # seeing cases where self.get_starting_timestamp() is null
+        # possibly related to target-bigquery pushing malformed state - https://gitlab.com/meltano/sdk/-/issues/300
+        except TypeError:
+            since = min_since
+            window_end = pendulum.instance(since).add(seconds=max_time_window.seconds)
+        until = min(window_end, max_until)
+        return since, until
+    
     def get_url_params(self, context, next_page_token):
         """Return a dictionary of URL query parameters."""
         params = super().get_url_params(context, next_page_token)
-        # Add the new parameter
+        params["metric"] = ",".join(self.metrics)
         params["timeframe"] = self.timeframe
-        params["breakdown"] = self.breakdown
+        params["period"] = self.time_period
+        params["metric_type"] = self.metric_type
+        if context and "lifetime_breakdown" in context:
+            params["breakdown"] = context["lifetime_breakdown"]
+        if self.has_pagination:
+            since, until = self._fetch_time_based_pagination_range(
+                context,
+                min_since=self.min_start_date,
+                max_until=self.max_end_date,
+                max_time_window=self.max_time_window,
+            )
+            params["since"] = since
+            params["until"] = until
         return params
+    
+    @property
+    def path(self) -> str:
+        api_version = self.config.get("api_version")
+        if api_version:
+            return f"/{api_version}" + "/{user_id}/insights"
+        else:
+            return "/{user_id}/insights"
+    
+    def get_records(self, context):
+
+        for breakdown in self.breakdowns_list:
+
+            # Create a modified context for this breakdown
+            b_context = dict(context or {})
+            b_context["lifetime_breakdown"] = breakdown
+
+            self.logger.info(f"Requesting lifetime insights with breakdown={breakdown}")
+
+            for record in super().get_records(b_context):
+                record["requested_breakdown"] = breakdown
+                yield record
     
     def parse_response(self, response: requests.Response) -> Iterable[dict]:
         resp_json = response.json()
