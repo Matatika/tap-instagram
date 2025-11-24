@@ -552,7 +552,7 @@ class MediaInsightsStream(InstagramStream):
             description="Number of exits from the story.",
         ),
         th.Property(
-            "story_impressions",
+            "story_total_interactions",
             th.IntegerType,
             description="Total number of views for the story.",
         ),
