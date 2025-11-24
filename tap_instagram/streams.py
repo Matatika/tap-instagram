@@ -641,6 +641,7 @@ class MediaInsightsStream(InstagramStream):
                     "replies",
                     "taps_forward",
                     "taps_back",
+                    "total_interactions"
                 ]
             elif media_product_type == "REELS":
                 return [
