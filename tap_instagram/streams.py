@@ -681,7 +681,11 @@ class UserInsightsStream(InstagramStream):
         if is_time_series:
             # Instagram requirement:
             # follower_count only supports last 30 days, excluding today
-            since = max(thirty_days_ago, min_since)
+            state_since = self.get_starting_timestamp(context)
+            if state_since:
+                since = max(state_since, thirty_days_ago)
+            else:
+                since = thirty_days_ago
             until = min(yesterday, max_until)
             return since, until
         
