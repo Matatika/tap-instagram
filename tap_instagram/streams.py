@@ -1004,30 +1004,70 @@ class BaseUserInsightsLifetimeStream(InstagramStream):
 
     # ----- Shared pagination logic -----
     def _fetch_time_based_pagination_range(
-        self, context, min_since, max_until, max_time_window
+        self,
+        context,
+        min_since: datetime,
+        max_until: datetime,
+        max_time_window: timedelta,
     ) -> Tuple[datetime, datetime]:
+        """
+        Make "since" and "until" pagination timestamps
+        Args:
+            context:
+            min_since: Min datetime for "since" parameter. Defaults to 2 years ago, max historical data
+                       supported for Facebook metrics.
+            max_until: Max datetime for which data is available. Defaults to a day ago.
+            max_time_window: Maximum duration (as a "tiemdelta") between "since" and "until". Default to
+                             30 days, max window supported by Facebook
+
+        Returns: DateTime objects for "since" and "until"
+        """
         two_years_ago = pendulum.now().subtract(years=1)
         min_since = max(min_since, two_years_ago)
+        thirty_days_ago = pendulum.now().subtract(days=30)
+        yesterday = pendulum.now().subtract(days=1)
+        is_time_series = context and context.get("metric_type") == "time_series"
 
+        if is_time_series:
+            # Instagram requirement:
+            # follower_count only supports last 30 days, excluding today
+            state_since = self.get_starting_timestamp(context)
+            if state_since:
+                since = max(state_since, thirty_days_ago)
+            else:
+                since = thirty_days_ago
+            until = min(yesterday, max_until)
+            return since, until
+
+        start_date = self.get_starting_replication_key_value(context) or self.config.get("start_date")
+        if isinstance(start_date, str):
+            start_date = pendulum.parse(start_date)
         try:
-            since = min(max(self.get_starting_timestamp(context), min_since), max_until)
+            since = min(max(start_date, min_since), max_until)
             window_end = min(
                 self.get_replication_key_signpost(context),
                 pendulum.instance(since).add(seconds=max_time_window.total_seconds()),
             )
+        # seeing cases where self.get_starting_timestamp() is null
+        # possibly related to target-bigquery pushing malformed state - https://gitlab.com/meltano/sdk/-/issues/300
         except TypeError:
             since = min_since
-            window_end = pendulum.instance(since).add(seconds=max_time_window.seconds)
-
+            window_end = pendulum.instance(since).add(
+                seconds=max_time_window.total_seconds()
+            )
         until = min(window_end, max_until)
         return since, until
 
     def get_url_params(self, context, next_page_token):
         params = super().get_url_params(context, next_page_token)
-        params["metric"] = ",".join(self.metrics)
+        if context and context.get("default_metric"):
+            params["metric"] = ",".join(self.default_metrics)
+            params["metric_type"] = "default"
+        else:
+            params["metric"] = ",".join(self.total_value_metrics)
+            params["metric_type"] = "total_value"
         params["timeframe"] = self.timeframe
         params["period"] = self.time_period
-        params["metric_type"] = self.metric_type
         if context and "lifetime_breakdown" in context:
             params["breakdown"] = context["lifetime_breakdown"]
 
@@ -1045,11 +1085,11 @@ class BaseUserInsightsLifetimeStream(InstagramStream):
 
 class UserInsightsLifetimeTotalValueStream(BaseUserInsightsLifetimeStream):
     name = "user_insights_lifetime"
-    primary_keys = ["id", "breakdowns"]
     replication_key = "end_time"
 
-    metrics = ["engaged_audience_demographics", "follower_demographics"]
-    metric_type = "total_value"
+    total_value_metrics = ["engaged_audience_demographics", "follower_demographics"]
+    default_metrics = ["online_followers"]
+    metric_types = ["total_value"]
     breakdowns_list = ["age", "city", "country", "gender"]
 
     schema = th.PropertiesList(
@@ -1059,40 +1099,70 @@ class UserInsightsLifetimeTotalValueStream(BaseUserInsightsLifetimeStream):
         th.Property("period", th.StringType),
         th.Property("end_time", th.DateTimeType),
         th.Property("breakdowns", th.StringType),
+        th.Property("key", th.StringType),
         th.Property("value", th.StringType),
         th.Property("title", th.StringType),
         th.Property("description", th.StringType),
     ).to_dict()
 
     def get_records(self, context):
-        # Loop through each breakdown automatically
-        for breakdown in self.breakdowns_list:
-            b_ctx = {**(context or {}), "lifetime_breakdown": breakdown}
-            for record in super().get_records(b_ctx):
-                record["requested_breakdown"] = breakdown
+        if self.default_metrics:
+            metric_context = dict(context or {})
+            metric_context["default_metric"] = True
+            for record in super().get_records(metric_context):
+                record["requested_breakdown"] = None
+                record["metric_type"] = "default"
                 yield record
+        
+        if self.total_value_metrics:
+            # Loop through each breakdown automatically
+            for breakdown in self.breakdowns_list:
+                b_ctx = {**(context or {}), "lifetime_breakdown": breakdown}
+                for record in super().get_records(b_ctx):
+                    record["requested_breakdown"] = breakdown
+                    record["metric_type"] = "total_value"
+                    yield record
 
     def parse_response(self, response):
         for row in response.json()["data"]:
             base = {
+                "id": row["id"].split("/")[0],
                 "metric": row["name"],
                 "period": row["period"],
                 "title": row["title"],
-                "id": row["id"],
                 "description": row["description"],
             }
 
+            # ---- TOTAL VALUE LOGIC ----
             if "total_value" in row:
                 total = row["total_value"]
+
                 item = base.copy()
-                item["value"] = total.get("value")
+                item["value"] = str(total.get("value"))
+                item["key"] = None
                 item["breakdowns"] = json.dumps(total.get("breakdowns", {}))
                 item["end_time"] = pendulum.now("UTC").to_datetime_string()
                 yield item
 
+            # ---- DEFAULT VALUES (ARRAY) ----
+            if "values" in row:
+                for val in row["values"]:
+                    end_time = (
+                        pendulum.parse(val["end_time"]).to_datetime_string()
+                        if "end_time" in val
+                        else pendulum.now("UTC").to_datetime_string()
+                    )
+
+                    for k, v in val.get("value", {}).items():
+                        item = base.copy()
+                        item["key"] = k
+                        item["value"] = str(v)
+                        item["breakdowns"] = ""
+                        item["end_time"] = end_time
+                        yield item
+
 class UserInsightsLifetimeDefaultStream(BaseUserInsightsLifetimeStream):
     name = "user_insights_lifetime_default"
-    primary_keys = ["id","key", "end_time"]
     replication_key = "end_time"
 
     metrics = ["online_followers"]

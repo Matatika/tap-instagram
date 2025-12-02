@@ -24,7 +24,7 @@ STREAM_TYPES = [
     MediaStream,
     MediaCommentsStream,
     DefaultUserInsightsDailyStream,
-    UserInsightsLifetimeDefaultStream,
+    #UserInsightsLifetimeDefaultStream,
     UserInsightsLifetimeTotalValueStream,
     UsersStream,
 ]
