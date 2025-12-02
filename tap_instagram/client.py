@@ -45,6 +45,8 @@ class InstagramStream(RESTStream):
             next_page_token = first_match
         else:
             next_page_token = response.headers.get("X-Next-Page", None)
+        if next_page_token == previous_token:
+            return None
 
         return next_page_token
 

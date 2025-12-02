@@ -83,6 +83,7 @@ class MediaStream(InstagramStream):
         "caption",
         "comments_count",
         "is_comment_enabled",
+        "is_story",
         "like_count",
         "media_product_type",
         "media_type",
@@ -124,6 +125,11 @@ class MediaStream(InstagramStream):
             "is_comment_enabled",
             th.BooleanType,
             description="Indicates if comments are enabled or disabled. Excludes album children.",
+        ),
+        th.Property(
+            "is_story",
+            th.BooleanType,
+            description="Indicates whether the media is a story.",
         ),
         th.Property(
             "like_count",
@@ -354,7 +360,6 @@ class MediaInsightsStream(InstagramStream):
     name = "media_insights"
     parent_stream_type = MediaStream
     state_partitioning_keys = ["user_id"]
-    primary_keys = ["id"]
     replication_key = None
     records_jsonpath = "$.data[*]"
 
@@ -396,6 +401,11 @@ class MediaInsightsStream(InstagramStream):
             description="Number of times the reel was shared.",
         ),
         th.Property(
+            "reel_views",
+            th.IntegerType,
+            description="Number of views for the reel.",
+        ),
+        th.Property(
             "reel_total_interactions",
             th.IntegerType,
             description="Total interactions on the reel.",
@@ -427,6 +437,16 @@ class MediaInsightsStream(InstagramStream):
             description="Number of replies to the story.",
         ),
         th.Property(
+            "story_shares",
+            th.IntegerType,
+            description="Number of shares of the story.",
+        ),
+        th.Property(
+            "story_swipe_forward",
+            th.IntegerType,
+            description="Number of swipe forwards on the story.",
+        ),
+        th.Property(
             "story_taps_back",
             th.IntegerType,
             description="Number of backward taps on the story.",
@@ -435,6 +455,11 @@ class MediaInsightsStream(InstagramStream):
             "story_taps_forward",
             th.IntegerType,
             description="Number of forward taps on the story.",
+        ),
+        th.Property(
+            "story_views",
+            th.IntegerType,
+            description="Number of views for the story.",
         ),
         # Feed (video/photo) metrics
         th.Property(
@@ -458,6 +483,21 @@ class MediaInsightsStream(InstagramStream):
             description="Unique accounts that viewed the video or photo.",
         ),
         th.Property(
+            "video_photo_saved",
+            th.IntegerType,
+            description="Number of times the video or photo was saved.",
+        ),
+        th.Property(
+            "video_photo_shares",
+            th.IntegerType,
+            description="Number of times the video or photo was shared.",
+        ),
+        th.Property(
+            "video_photo_views",
+            th.IntegerType, 
+            description="Number of views for the video or photo.",
+        ),
+        th.Property(
             "carousel_album_total_interactions",
             th.IntegerType,
             description="Total interactions on the carousel post.",
@@ -468,9 +508,19 @@ class MediaInsightsStream(InstagramStream):
             description="Unique accounts that viewed the carousel post.",
         ),
         th.Property(
-            "carousel_saved",
+            "carousel_album_saved",
             th.IntegerType,
             description="Number of times the carousel post was saved.",
+        ),
+        th.Property(
+            "carousel_album_shares",
+            th.IntegerType,
+            description="Number of times the carousel post was shared.",
+        ),
+        th.Property(
+            "carousel_album_views",
+            th.IntegerType,
+            description="Number of views for the carousel post.",
         ),
         th.Property(
             "likes",
@@ -492,11 +542,12 @@ class MediaInsightsStream(InstagramStream):
                 return [
                     "exits",
                     "likes",
+                    "navigation",
                     "reach",
                     "replies",
-                    "taps_forward",
-                    "taps_back",
+                    "shares",
                     "total_interactions",
+                    "views",
                 ]
             elif media_product_type == "REELS":
                 return [
@@ -505,6 +556,7 @@ class MediaInsightsStream(InstagramStream):
                     "reach",
                     "saved",
                     "shares",
+                    "views",
                     "total_interactions",
                 ]
             else:  # media_product_type is "AD" or "FEED"
@@ -520,7 +572,9 @@ class MediaInsightsStream(InstagramStream):
             return [
                 "reach",
                 "saved",
+                "shares",
                 "total_interactions",
+                "views",
             ]
         else:
             raise ValueError(
@@ -927,109 +981,48 @@ class DefaultUserInsightsDailyStream(UserInsightsStream):
 
         super().__init__(tap=tap, schema=schema, **kwargs)
 
-
-class UserInsightsLifetimeStream(InstagramStream):
-    """Define custom stream."""
-
-    name = "user_insights_lifetime"
+class BaseUserInsightsLifetimeStream(InstagramStream):
     parent_stream_type = UsersStream
-    primary_keys = ["id", "breakdowns"]
-    replication_key = "end_time"
     records_jsonpath = "$.data[*]"
     has_pagination = True
+
     min_start_date: datetime = pendulum.now("UTC").subtract(years=2).add(days=1)
     max_end_date: datetime = pendulum.today("UTC")
     max_time_window: timedelta = pendulum.duration(days=30)
-    metrics = ["engaged_audience_demographics", "follower_demographics"]
+
     time_period = "lifetime"
     timeframe = "this_month"
-    breakdowns_list = ["age", "city", "country", "gender"]
-    metric_type = "total_value"
-    schema = th.PropertiesList(
-        th.Property(
-            "id",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "user_id",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "metric",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "period",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "end_time",
-            th.DateTimeType,
-            description="",
-        ),
-        th.Property(
-            "breakdowns",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "value",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "title",
-            th.StringType,
-            description="",
-        ),
-        th.Property(
-            "description",
-            th.StringType,
-            description="",
-        ),
-    ).to_dict()
 
+    schema = None  # Child classes override
+
+    @property
+    def path(self) -> str:
+        api_version = self.config.get("api_version")
+        if api_version:
+            return f"/{api_version}" + "/{user_id}/insights"
+        return "/{user_id}/insights"
+
+    # ----- Shared pagination logic -----
     def _fetch_time_based_pagination_range(
-        self,
-        context,
-        min_since: datetime,
-        max_until: datetime,
-        max_time_window: timedelta,
+        self, context, min_since, max_until, max_time_window
     ) -> Tuple[datetime, datetime]:
-        """
-        Make "since" and "until" pagination timestamps
-        Args:
-            context:
-            min_since: Min datetime for "since" parameter. Defaults to 2 years ago, max historical data
-                       supported for Facebook metrics.
-            max_until: Max datetime for which data is available. Defaults to a day ago.
-            max_time_window: Maximum duration (as a "tiemdelta") between "since" and "until". Default to
-                             30 days, max window supported by Facebook
-
-        Returns: DateTime objects for "since" and "until"
-        """
         two_years_ago = pendulum.now().subtract(years=1)
         min_since = max(min_since, two_years_ago)
+
         try:
             since = min(max(self.get_starting_timestamp(context), min_since), max_until)
             window_end = min(
                 self.get_replication_key_signpost(context),
                 pendulum.instance(since).add(seconds=max_time_window.total_seconds()),
             )
-        # seeing cases where self.get_starting_timestamp() is null
-        # possibly related to target-bigquery pushing malformed state - https://gitlab.com/meltano/sdk/-/issues/300
         except TypeError:
             since = min_since
             window_end = pendulum.instance(since).add(seconds=max_time_window.seconds)
+
         until = min(window_end, max_until)
         return since, until
 
     def get_url_params(self, context, next_page_token):
-        """Return a dictionary of URL query parameters."""
         params = super().get_url_params(context, next_page_token)
         params["metric"] = ",".join(self.metrics)
         params["timeframe"] = self.timeframe
@@ -1037,6 +1030,7 @@ class UserInsightsLifetimeStream(InstagramStream):
         params["metric_type"] = self.metric_type
         if context and "lifetime_breakdown" in context:
             params["breakdown"] = context["lifetime_breakdown"]
+
         if self.has_pagination:
             since, until = self._fetch_time_based_pagination_range(
                 context,
@@ -1048,47 +1042,110 @@ class UserInsightsLifetimeStream(InstagramStream):
             params["until"] = until
         return params
 
-    @property
-    def path(self) -> str:
-        api_version = self.config.get("api_version")
-        if api_version:
-            return f"/{api_version}" + "/{user_id}/insights"
-        else:
-            return "/{user_id}/insights"
+
+class UserInsightsLifetimeTotalValueStream(BaseUserInsightsLifetimeStream):
+    name = "user_insights_lifetime"
+    primary_keys = ["id", "breakdowns"]
+    replication_key = "end_time"
+
+    metrics = ["engaged_audience_demographics", "follower_demographics"]
+    metric_type = "total_value"
+    breakdowns_list = ["age", "city", "country", "gender"]
+
+    schema = th.PropertiesList(
+        th.Property("id", th.StringType),
+        th.Property("user_id", th.StringType),
+        th.Property("metric", th.StringType),
+        th.Property("period", th.StringType),
+        th.Property("end_time", th.DateTimeType),
+        th.Property("breakdowns", th.StringType),
+        th.Property("value", th.StringType),
+        th.Property("title", th.StringType),
+        th.Property("description", th.StringType),
+    ).to_dict()
 
     def get_records(self, context):
+        # Loop through each breakdown automatically
         for breakdown in self.breakdowns_list:
-            # Create a modified context for this breakdown
-            b_context = dict(context or {})
-            b_context["lifetime_breakdown"] = breakdown
-
-            self.logger.info(f"Requesting lifetime insights with breakdown={breakdown}")
-
-            for record in super().get_records(b_context):
+            b_ctx = {**(context or {}), "lifetime_breakdown": breakdown}
+            for record in super().get_records(b_ctx):
                 record["requested_breakdown"] = breakdown
                 yield record
 
-    def parse_response(self, response: requests.Response) -> Iterable[dict]:
-        resp_json = response.json()
-        for row in resp_json["data"]:
-            base_item = {
+    def parse_response(self, response):
+        for row in response.json()["data"]:
+            base = {
                 "metric": row["name"],
                 "period": row["period"],
                 "title": row["title"],
                 "id": row["id"],
                 "description": row["description"],
             }
+
             if "total_value" in row:
                 total = row["total_value"]
-                item = dict(base_item)
+                item = base.copy()
                 item["value"] = total.get("value")
-                breakdowns = total.get("breakdowns")
-                if breakdowns:
-                    item["breakdowns"] = json.dumps(breakdowns)
-                # Use current date/time as end_time if not given
-                item["end_time"] = pendulum.now("UTC").format("YYYY-MM-DD HH:mm:ss")
+                item["breakdowns"] = json.dumps(total.get("breakdowns", {}))
+                item["end_time"] = pendulum.now("UTC").to_datetime_string()
                 yield item
 
+class UserInsightsLifetimeDefaultStream(BaseUserInsightsLifetimeStream):
+    name = "user_insights_lifetime_default"
+    primary_keys = ["id", "end_time"]
+    replication_key = "end_time"
+
+    metrics = ["online_followers"]
+    metric_type = "default"
+
+    schema = th.PropertiesList(
+        th.Property("id", th.StringType),
+        th.Property("user_id", th.StringType),
+        th.Property("metric", th.StringType),
+        th.Property("period", th.StringType),
+        th.Property("end_time", th.DateTimeType),
+        th.Property("breakdowns", th.StringType),
+        th.Property("key", th.StringType),
+        th.Property("value", th.IntegerType),
+        th.Property("title", th.StringType),
+        th.Property("description", th.StringType),
+    ).to_dict()
+
+    def parse_response(self, response):
+        for row in response.json()["data"]:
+            base = {
+                "metric": row["name"],
+                "period": row["period"],
+                "title": row["title"],
+                "id": row["id"],
+                "description": row["description"],
+            }
+
+            # Default format: "values" array
+            if "values" in row:
+                for val in row["values"]:
+                    end_time = (
+                        pendulum.parse(val["end_time"]).to_datetime_string()
+                        if "end_time" in val
+                        else pendulum.now("UTC").to_datetime_string()
+                    )
+                    for k, v in val.get("value", {}).items():
+                        item = base.copy()
+                        item["end_time"] = end_time
+                        item["breakdowns"] = ""
+                        item["key"] = k
+                        item["value"] = v
+                        yield item
+
+            # Legacy fallback
+            elif "total_value" in row:
+                for k, v in row["total_value"].get("value", {}).items():
+                    item = base.copy()
+                    item["end_time"] = pendulum.now("UTC").to_datetime_string()
+                    item["breakdowns"] = json.dumps(row["total_value"].get("breakdowns", {}))
+                    item["key"] = k
+                    item["value"] = v
+                    yield item
 
 class UserInsightsCustomStream(UserInsightsStream):
     """Define custom stream."""
