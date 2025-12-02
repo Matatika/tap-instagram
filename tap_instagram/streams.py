@@ -1092,7 +1092,7 @@ class UserInsightsLifetimeTotalValueStream(BaseUserInsightsLifetimeStream):
 
 class UserInsightsLifetimeDefaultStream(BaseUserInsightsLifetimeStream):
     name = "user_insights_lifetime_default"
-    primary_keys = ["id", "end_time"]
+    primary_keys = ["id","key", "end_time"]
     replication_key = "end_time"
 
     metrics = ["online_followers"]
