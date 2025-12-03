@@ -11,21 +11,23 @@ from tap_instagram.streams import (
     MediaInsightsStream,
     MediaStream,
     MediaCommentsStream,
+    StoriesStream,
+    StoryInsightsStream,
     DefaultUserInsightsDailyStream,
-    UserInsightsLifetimeDefaultStream,
-    UserInsightsLifetimeTotalValueStream,
+    UserInsightsLifetimeStream,
     UserInsightsCustomStream,
     UsersStream,
 )
 
 STREAM_TYPES = [
-    #MediaChildrenStream,
+    MediaChildrenStream,
     MediaInsightsStream,
     MediaStream,
     MediaCommentsStream,
+    StoriesStream,
+    StoryInsightsStream,
     DefaultUserInsightsDailyStream,
-    #UserInsightsLifetimeDefaultStream,
-    UserInsightsLifetimeTotalValueStream,
+    UserInsightsLifetimeStream,
     UsersStream,
 ]
 

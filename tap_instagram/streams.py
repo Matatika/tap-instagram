@@ -67,16 +67,46 @@ class UsersStream(InstagramStream):
     def get_child_context(self, record: dict, context: Optional[dict]) -> dict:
         return {"user_id": record["id"]}
 
+class BaseMediaStream(InstagramStream):
+    """Shared logic for Media & Stories."""
 
-class MediaStream(InstagramStream):
-    """Define custom stream."""
+    records_jsonpath = "$.data[*]"
+    inject_context_fields: list[str] = []
+
+    def get_url_params(self, context, next_page_token):
+        params = super().get_url_params(context, next_page_token)
+        if hasattr(self, "fields"):
+            params["fields"] = ",".join(self.fields)
+        if getattr(self, "replication_key", None):
+            params["since"] = self.get_starting_timestamp(context)
+        return params
+
+    def get_records(self, context):
+        for row in super().get_records(context):
+            for f in self.inject_context_fields:
+                row[f] = context.get(f)
+            yield row
+
+    def parse_response(self, response):
+        for row in extract_jsonpath(self.records_jsonpath, response.json()):
+            ts = row.get("timestamp")
+            if ts:
+                row["timestamp"] = pendulum.parse(ts).format("YYYY-MM-DD HH:mm:ss")
+
+            row["is_story"] = (row.get("media_product_type") == "STORY")
+
+            yield row
+
+class MediaStream(BaseMediaStream):
+    """Media history stream."""
 
     name = "media"
     path = "/{user_id}/media"  # user_id is populated using child context keys from UsersStream
     parent_stream_type = UsersStream
-    primary_keys = ["id"]
+    primary_keys = ["id","timestamp"]
     replication_key = "timestamp"
     records_jsonpath = "$.data[*]"
+    inject_context_fields: list[str] = []
     fields = [
         "id",
         "ig_id",
@@ -114,6 +144,11 @@ class MediaStream(InstagramStream):
             description="Caption. Excludes album children. @ symbol excluded unless the app user can perform "
             "admin-equivalent tasks on the Facebook Page connected to the Instagram account used to "
             "create the caption.",
+        ),
+        th.Property(
+            "carousel_album_id",
+            th.StringType,
+            description="ID of the parent carousel album if the media is part of a carousel album.",
         ),
         th.Property(
             "comments_count",
@@ -197,39 +232,16 @@ class MediaStream(InstagramStream):
         ),
     ).to_dict()
 
-    def make_since_param(self, context: Optional[dict]) -> datetime:
-        state_ts = self.get_starting_timestamp(context)
-        if state_ts:
-            return pendulum.instance(state_ts).subtract(
-                days=self.config["media_insights_lookback_days"]
-            )
-        else:
-            return state_ts
-
-    def get_url_params(
-        self, context: Optional[dict], next_page_token: Optional[Any]
-    ) -> Dict[str, Any]:
-        params = super().get_url_params(context, next_page_token)
-        params["fields"] = ",".join(self.fields)
-        params["since"] = self.make_since_param(context)
-        return params
-
-    def get_child_context(self, record: dict, context: Optional[dict]) -> dict:
-        return {
+    def get_child_context(self, record, context):
+        ctx = {
             "user_id": context["user_id"],
             "media_id": record["id"],
             "media_type": record.get("media_type"),
-            # media_product_type not present for carousel children media
             "media_product_type": record.get("media_product_type"),
         }
-
-    def parse_response(self, response: requests.Response) -> Iterable[dict]:
-        for row in extract_jsonpath(self.records_jsonpath, input=response.json()):
-            if "timestamp" in row:
-                row["timestamp"] = pendulum.parse(row["timestamp"]).format(
-                    "YYYY-MM-DD HH:mm:ss"
-                )
-            yield row
+        if record.get("media_type") == "CAROUSEL_ALBUM":
+            ctx["carousel_album_id"] = record["id"]
+        return ctx
 
 
 class MediaChildrenStream(MediaStream):
@@ -239,13 +251,11 @@ class MediaChildrenStream(MediaStream):
     parent_stream_type = MediaStream
     state_partitioning_keys = ["user_id"]
     path = "/{media_id}/children"  # media_id is populated using child context keys from MediaStream
-    # caption, comments_count, is_comment_enabled, like_count, media_product_type
-    # not available on album children
-    # TODO: Is media_product_type available on children of some media types? carousel vs album children?
-    # https://developers.facebook.com/docs/instagram-api/reference/ig-media#fields
+    inject_context_fields = ["media_id", "carousel_album_id"]
     fields = [
         "id",
         "ig_id",
+        "carousel_album_id",
         "media_type",
         "media_url",
         "owner",
@@ -256,14 +266,6 @@ class MediaChildrenStream(MediaStream):
         "username",
     ]
 
-    def parse_response(self, response: requests.Response) -> Iterable[dict]:
-        for row in extract_jsonpath(self.records_jsonpath, input=response.json()):
-            if "timestamp" in row:
-                row["timestamp"] = pendulum.parse(row["timestamp"]).format(
-                    "YYYY-MM-DD HH:mm:ss"
-                )
-            yield row
-
 
 class MediaCommentsStream(MediaStream):
     """Define custom stream."""
@@ -271,11 +273,9 @@ class MediaCommentsStream(MediaStream):
     name = "media_comments"
     parent_stream_type = MediaStream
     state_partitioning_keys = ["user_id"]
-    path = "/{media_id}/comments"  # media_id is populated using child context keys from MediaStream
-    # caption, comments_count, is_comment_enabled, like_count, media_product_type
-    # not available on album children
-    # TODO: Is media_product_type available on children of some media types? carousel vs album children?
-    # https://developers.facebook.com/docs/instagram-api/reference/ig-media#fields
+    primary_keys = ["id","timestamp"]
+    path = "/{media_id}/comments" 
+    inject_context_fields = ["media_id"]
     fields = [
         "id",
         "text",
@@ -291,12 +291,17 @@ class MediaCommentsStream(MediaStream):
         th.Property(
             "id",
             th.StringType,
-            description="Media ID.",
+            description="Media comment ID.",
         ),
         th.Property(
             "user_id",
             th.StringType,
             description="Instagram user ID.",
+        ),
+        th.Property(
+            "media_id",
+            th.StringType,
+            description="Instagram media ID.",
         ),
         th.Property(
             "parent_id",
@@ -345,17 +350,112 @@ class MediaCommentsStream(MediaStream):
         ),
     ).to_dict()
 
-    def parse_response(self, response: requests.Response) -> Iterable[dict]:
-        for row in extract_jsonpath(self.records_jsonpath, input=response.json()):
-            if "timestamp" in row:
-                row["timestamp"] = pendulum.parse(row["timestamp"]).format(
-                    "YYYY-MM-DD HH:mm:ss"
+class BaseMediaInsightsStream(InstagramStream):
+    """Shared logic for MediaInsights and StoryInsights."""
+    
+    parent_stream_type = MediaStream
+    records_jsonpath = "$.data[*]"
+    replication_key = None
+    breakdown_metric = None
+    breakdowns = None
+
+    @property
+    def path(self):
+        api_version = self.config.get("api_version")
+        if api_version:
+            return f"/{api_version}" + "/{media_id}/insights"
+        return "/{media_id}/insights"
+
+    def get_url_params(self, context, next_page_token):
+        params = super().get_url_params(context, next_page_token)
+
+        # Breakdown request
+        if context.get("breakdown_run") and self.breakdown_metric:
+            params["metric"] = self.breakdown_metric
+            params["breakdown"] = self.breakdowns
+        else:
+            params["metric"] = ",".join(
+                self._metrics_for_media_type(
+                    context["media_type"], context["media_product_type"]
                 )
-            yield row
+            )
+        params["period"] = "lifetime"
+        return params
 
+    def get_records(self, context):
+        # standard request
+        for r in super().get_records(context):
+            r["metric_type"] = "standard"
+            yield r
 
-class MediaInsightsStream(InstagramStream):
-    """Define custom stream."""
+        # breakdown request
+        if self.breakdown_metric:
+            bd = dict(context)
+            bd["breakdown_run"] = True
+            for r in super().get_records(bd):
+                r["metric_type"] = "breakdown"
+                yield r
+
+    def validate_response(self, response):
+        err = response.json().get("error", {})
+        msg = err.get("message") or ""
+        if (
+            err.get("error_user_title") == "Media posted before business account conversion"
+            or "(#10) Not enough viewers" in msg
+        ):
+            self.logger.warning(f"Skipping insights: {err}")
+            return
+        super().validate_response(response)
+
+    def parse_response(self, response):
+        resp = response.json()
+        data = resp.get("data") or ([resp] if "name" in resp else [])
+        if not data:
+            return
+
+        record = {}
+        for metric in data:
+            mid = metric.get("id", "").split("/")[0]
+            if mid:
+                record["id"] = mid
+
+            name = metric.get("name", "").lower()
+            desc = (metric.get("description") or "").lower()
+
+            # prefix resolution
+            prefix = ""
+            if "story" in desc:
+                prefix = "story_"
+            elif "reel" in desc:
+                prefix = "reel_"
+            elif "carousel" in desc:
+                prefix = "carousel_album_"
+            elif "photo" in desc or "video" in desc:
+                prefix = "video_photo_"
+
+            key = f"{prefix}{name}"
+
+            # normal values
+            values = metric.get("values", [])
+            val = values[0].get("value") if values else None
+            if isinstance(val, dict):
+                for k,v in val.items():
+                    record[f"{key}_{k}"] = v
+            elif val is not None:
+                record[key] = val
+
+            # breakdowns
+            total = metric.get("total_value", {})
+            for bd in total.get("breakdowns", []):
+                for res in bd.get("results", []):
+                    action = res["dimension_values"][0]
+                    record[f"{prefix}{action}"] = res.get("value")
+
+        if record:
+            yield record
+
+class MediaInsightsStream(BaseMediaInsightsStream):
+    """Media Insights stream."""
 
     name = "media_insights"
     parent_stream_type = MediaStream
@@ -409,57 +509,6 @@ class MediaInsightsStream(InstagramStream):
             "reel_total_interactions",
             th.IntegerType,
             description="Total interactions on the reel.",
-        ),
-        # Story metrics
-        th.Property(
-            "story_exits",
-            th.IntegerType,
-            description="Number of exits from the story.",
-        ),
-        th.Property(
-            "story_total_interactions",
-            th.IntegerType,
-            description="Total number of views for the story.",
-        ),
-        th.Property(
-            "story_reach",
-            th.IntegerType,
-            description="Unique accounts that viewed the story.",
-        ),
-        th.Property(
-            "story_likes",
-            th.IntegerType,
-            description="Number of likes on the story.",
-        ),
-        th.Property(
-            "story_replies",
-            th.IntegerType,
-            description="Number of replies to the story.",
-        ),
-        th.Property(
-            "story_shares",
-            th.IntegerType,
-            description="Number of shares of the story.",
-        ),
-        th.Property(
-            "story_swipe_forward",
-            th.IntegerType,
-            description="Number of swipe forwards on the story.",
-        ),
-        th.Property(
-            "story_taps_back",
-            th.IntegerType,
-            description="Number of backward taps on the story.",
-        ),
-        th.Property(
-            "story_taps_forward",
-            th.IntegerType,
-            description="Number of forward taps on the story.",
-        ),
-        th.Property(
-            "story_views",
-            th.IntegerType,
-            description="Number of views for the story.",
         ),
         # Feed (video/photo) metrics
         th.Property(
@@ -534,22 +583,10 @@ class MediaInsightsStream(InstagramStream):
         ),
     ).to_dict()
 
-    @staticmethod
-    def _metrics_for_media_type(self, media_type: str, media_product_type: str):
+    def _metrics_for_media_type(self,media_type: str, media_product_type: str):
         # TODO: Define types for these function args
         if media_type in ("IMAGE", "VIDEO"):
-            if media_product_type == "STORY":
-                return [
-                    "exits",
-                    "likes",
-                    "navigation",
-                    "reach",
-                    "replies",
-                    "shares",
-                    "total_interactions",
-                    "views",
-                ]
-            elif media_product_type == "REELS":
+            if media_product_type == "REELS":
                 return [
                     "comments",
                     "likes",
@@ -581,20 +618,12 @@ class MediaInsightsStream(InstagramStream):
                 f"media_type from parent record must be one of IMAGE, VIDEO, CAROUSEL_ALBUM, got: {media_type}"
             )
 
-    @property
-    def path(self):
-        api_version = self.config.get("api_version")
-        if api_version:
-            return f"/{api_version}" + "/{media_id}/insights"
-        else:
-            return "/{media_id}/insights"
-
     def get_url_params(
         self, context: Optional[dict], next_page_token: Optional[Any]
     ) -> Dict[str, Any]:
         params = super().get_url_params(context, next_page_token)
         metrics = self._metrics_for_media_type(
-            self, context["media_type"], context["media_product_type"]
+            context["media_type"], context["media_product_type"]
         )
         params["metric"] = ",".join(metrics)
         params["period"] = (
@@ -602,83 +631,243 @@ class MediaInsightsStream(InstagramStream):
         )
         return params
 
-    def validate_response(self, response: requests.Response) -> None:
-        resp_json = response.json()
-        if (
-            resp_json.get("error", {}).get("error_user_title")
-            == "Media posted before business account conversion"
-            or "(#10) Not enough viewers for the media to show insights"
-            in str(response.json().get("error", {}).get("message"))
-        ):
-            self.logger.warning(f"Skipping: {response.json()['error']}")
-            return
-        super().validate_response(response)
+class StoriesStream(BaseMediaStream):
+    """Define custom stream."""
 
-    def parse_response(self, response: requests.Response) -> Iterable[dict]:
-        resp_json = response.json()
+    name = "stories"
+    path = "/{user_id}/stories"  # user_id is populated using child context keys from UsersStream
+    parent_stream_type = UsersStream
+    primary_keys = ["id","timestamp"]
+    replication_key = "timestamp"
+    records_jsonpath = "$.data[*]"
+    inject_context_fields: list[str] = []
+    fields = [
+        "id",
+        "ig_id",
+        "caption",
+        "is_story",
+        "like_count",
+        "media_product_type",
+        "media_type",
+        "media_url",
+        "owner",
+        "permalink",
+        "shortcode",
+        "thumbnail_url",
+        "timestamp",
+        "username",
+    ]
+    # Optionally, you may also use `schema_filepath` in place of `schema`:
+    # schema_filepath = SCHEMAS_DIR / "users.json"
+    schema = th.PropertiesList(
+        th.Property(
+            "id",
+            th.StringType,
+            description="Media ID.",
+        ),
+        th.Property(
+            "ig_id",
+            th.StringType,
+            description="Instagram media ID.",
+        ),
+        th.Property(
+            "caption",
+            th.StringType,
+            description="Caption. Excludes album children. @ symbol excluded unless the app user can perform "
+            "admin-equivalent tasks on the Facebook Page connected to the Instagram account used to "
+            "create the caption.",
+        ),
+        th.Property(
+            "carousel_album_id",
+            th.StringType,
+            description="ID of the parent carousel album if the media is part of a carousel album.",
+        ),
+        th.Property(
+            "is_story",
+            th.BooleanType,
+            description="Indicates whether the media is a story.",
+        ),
+        th.Property(
+            "like_count",
+            th.IntegerType,
+            description="Count of likes on the media. Excludes likes on album child media and likes on promoted posts "
+            "created from the media. Includes replies on comments.",
+        ),
+        th.Property(
+            "media_product_type",
+            th.StringType,
+            description="Surface where the media is published. Can be AD, FEED, IGTV, or STORY.",
+        ),
+        th.Property(
+            "media_type",
+            th.StringType,
+            description="Media type. Can be CAROUSEL_ALBUM, IMAGE, or VIDEO.",
+        ),
+        th.Property(
+            "media_url",
+            th.StringType,
+            description="Media URL. Will be omitted from responses if the media contains copyrighted material, "
+            "or has been flagged for a copyright violation.",
+        ),
+        th.Property(
+            "owner",
+            th.ObjectType(
+                th.Property(
+                    "id",
+                    th.StringType,
+                    description="ID of Instagram user who created the media.",
+                ),
+                th.Property(
+                    "username",
+                    th.StringType,
+                    description="Username of Instagram user who created the media.",
+                ),
+            ),
+            description="ID of Instagram user who created the media. Only returned if the app user making the query "
+            "also created the media, otherwise username field will be returned instead.",
+        ),
+        th.Property(
+            "permalink",
+            th.StringType,
+            description="Permanent URL to the media.",
+        ),
+        th.Property(
+            "shortcode",
+            th.StringType,
+            description="Shortcode to the media.",
+        ),
+        th.Property(
+            "thumbnail_url",
+            th.StringType,
+            description="Media thumbnail URL. Only available on VIDEO media.",
+        ),
+        th.Property(
+            "timestamp",
+            th.DateTimeType,
+            description="ISO 8601 formatted creation date in UTC (default is UTC ±00:00)",
+        ),
+        th.Property(
+            "username",
+            th.StringType,
+            description="Username of user who created the media.",
+        ),
+    ).to_dict()
 
-        # Handle API error cases gracefully
-        if (
-            resp_json.get("error", {}).get("error_user_title")
-            == "Media posted before business account conversion"
-            or "(#10) Not enough viewers for the media to show insights"
-            in str(resp_json.get("error", {}).get("message"))
-        ):
-            self.logger.warning(
-                f"Skipping media due to no insights: {resp_json.get('error')}"
-            )
-            return
+    def get_child_context(self, record, context):
+        return {
+            "user_id": context["user_id"],
+            "media_id": record["id"],
+            "media_type": record.get("media_type"),
+            "media_product_type": "STORY",
+        }
 
-        # Instagram sometimes wraps a single record directly in "data"
-        data_items = resp_json.get("data")
-        if not data_items:
-            if "name" in resp_json:
-                data_items = [resp_json]
-            else:
-                return
+class StoryInsightsStream(BaseMediaInsightsStream):
+    """Story insights stream."""
 
-        record = {}
+    name = "story_insights"
+    parent_stream_type = StoriesStream
+    state_partitioning_keys = ["user_id"]
+    replication_key = None
+    records_jsonpath = "$.data[*]"
+    breakdowns = "story_navigation_action_type"
+    breakdown_metric = "navigation"
+    standard_metrics = [
+                    "navigation",
+                    "reach",
+                    "replies",
+                    "shares",
+                    "total_interactions",
+                    "views",
+                ]
 
-        for metric in data_items:
-            # Example: "18077067653335581/insights/comments/lifetime"
-            insight_id = metric.get("id")
-            if not insight_id:
-                continue
+    schema = th.PropertiesList(
+        th.Property(
+            "id",
+            th.StringType,
+            description="Unique media ID from Instagram.",
+        ),
+        # Story metrics
+        th.Property(
+            "story_tap_exit",
+            th.IntegerType,
+            description="Number of exits from the story.",
+        ),
+        th.Property(
+            "story_navigation",
+            th.IntegerType,
+            description="Number of navigations on the story.",
+        ),
+        th.Property(
+            "story_total_interactions",
+            th.IntegerType,
+            description="Total number of views for the story.",
+        ),
+        th.Property(
+            "story_reach",
+            th.IntegerType,
+            description="Unique accounts that viewed the story.",
+        ),
+        th.Property(
+            "story_likes",
+            th.IntegerType,
+            description="Number of likes on the story.",
+        ),
+        th.Property(
+            "story_replies",
+            th.IntegerType,
+            description="Number of replies to the story.",
+        ),
+        th.Property(
+            "story_shares",
+            th.IntegerType,
+            description="Number of shares of the story.",
+        ),
+        th.Property(
+            "story_swipe_forward",
+            th.IntegerType,
+            description="Number of swipe forwards on the story.",
+        ),
+        th.Property(
+            "story_tap_back",
+            th.IntegerType,
+            description="Number of backward taps on the story.",
+        ),
+        th.Property(
+            "story_tap_forward",
+            th.IntegerType,
+            description="Number of forward taps on the story.",
+        ),
+        th.Property(
+            "story_views",
+            th.IntegerType,
+            description="Number of views for the story.",
+        ),
+        th.Property(
+            "likes",
+            th.IntegerType,
+            description="Number of likes post or ad received.",
+        ),
+        th.Property(
+            "comments",
+            th.IntegerType,
+            description="Number of comments post or ad received.",
+        ),
+    ).to_dict()
+    
+    def _metrics_for_media_type(self,media_type, media_product_type):
+        """Story insights always for STORY media."""
+        if media_product_type != "STORY":
+            return []
 
-            # Extract the media_id portion before the first "/"
-            media_id = insight_id.split("/")[0]
-            record["id"] = media_id
-
-            metric_name = metric.get("name", "").lower()
-            values = metric.get("values", [])
-            if not values:
-                continue
-
-            val = values[0].get("value")
-            desc = (metric.get("description") or "").lower()
-            if "reel" in desc:
-                prefix = "reel_"
-            elif "story" in desc:
-                prefix = "story_"
-            elif "photo" in desc or "video" in desc:
-                prefix = "video_photo_"
-            elif "carousel" in desc:
-                prefix = "carousel_album_"
-            else:
-                prefix = ""
-
-            key_name = f"{prefix}{metric_name}"
-
-            # Handle nested dicts
-            if isinstance(val, dict):
-                for subkey, subval in val.items():
-                    record[f"{key_name}_{subkey}"] = subval
-            else:
-                record[key_name] = val
-
-        if record:
-            yield record
-
+        # Same metrics you used previously
+        return [
+            "navigation",
+            "reach",
+            "replies",
+            "shares",
+            "total_interactions",
+            "views",
+        ]
 
 class UserInsightsStream(InstagramStream):
     parent_stream_type = UsersStream
@@ -1083,7 +1272,7 @@ class BaseUserInsightsLifetimeStream(InstagramStream):
         return params
 
 
-class UserInsightsLifetimeTotalValueStream(BaseUserInsightsLifetimeStream):
+class UserInsightsLifetimeStream(BaseUserInsightsLifetimeStream):
     name = "user_insights_lifetime"
     replication_key = "end_time"
 
@@ -1160,62 +1349,6 @@ class UserInsightsLifetimeTotalValueStream(BaseUserInsightsLifetimeStream):
                         item["breakdowns"] = ""
                         item["end_time"] = end_time
                         yield item
-
-class UserInsightsLifetimeDefaultStream(BaseUserInsightsLifetimeStream):
-    name = "user_insights_lifetime_default"
-    replication_key = "end_time"
-
-    metrics = ["online_followers"]
-    metric_type = "default"
-
-    schema = th.PropertiesList(
-        th.Property("id", th.StringType),
-        th.Property("user_id", th.StringType),
-        th.Property("metric", th.StringType),
-        th.Property("period", th.StringType),
-        th.Property("end_time", th.DateTimeType),
-        th.Property("breakdowns", th.StringType),
-        th.Property("key", th.StringType),
-        th.Property("value", th.IntegerType),
-        th.Property("title", th.StringType),
-        th.Property("description", th.StringType),
-    ).to_dict()
-
-    def parse_response(self, response):
-        for row in response.json()["data"]:
-            base = {
-                "metric": row["name"],
-                "period": row["period"],
-                "title": row["title"],
-                "id": row["id"],
-                "description": row["description"],
-            }
-
-            # Default format: "values" array
-            if "values" in row:
-                for val in row["values"]:
-                    end_time = (
-                        pendulum.parse(val["end_time"]).to_datetime_string()
-                        if "end_time" in val
-                        else pendulum.now("UTC").to_datetime_string()
-                    )
-                    for k, v in val.get("value", {}).items():
-                        item = base.copy()
-                        item["end_time"] = end_time
-                        item["breakdowns"] = ""
-                        item["key"] = k
-                        item["value"] = v
-                        yield item
-
-            # Legacy fallback
-            elif "total_value" in row:
-                for k, v in row["total_value"].get("value", {}).items():
-                    item = base.copy()
-                    item["end_time"] = pendulum.now("UTC").to_datetime_string()
-                    item["breakdowns"] = json.dumps(row["total_value"].get("breakdowns", {}))
-                    item["key"] = k
-                    item["value"] = v
-                    yield item
 
 class UserInsightsCustomStream(UserInsightsStream):
     """Define custom stream."""
