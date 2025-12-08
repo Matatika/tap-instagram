@@ -13,29 +13,21 @@ from tap_instagram.streams import (
     MediaCommentsStream,
     StoriesStream,
     StoryInsightsStream,
-    UserInsights28DayStream,
-    UserInsightsDailyStream,
-    UserInsightsFollowersStream,
-    UserInsightsOnlineFollowersStream,
-    UserInsightsWeeklyStream,
+    DefaultUserInsightsDailyStream,
     UserInsightsLifetimeStream,
     UserInsightsCustomStream,
     UsersStream,
 )
 
 STREAM_TYPES = [
-    #MediaChildrenStream,
+    MediaChildrenStream,
     MediaInsightsStream,
     MediaStream,
     MediaCommentsStream,
-    #StoriesStream,
-    #StoryInsightsStream,
-    #UserInsights28DayStream,
-    UserInsightsDailyStream,
+    StoriesStream,
+    StoryInsightsStream,
+    DefaultUserInsightsDailyStream,
     UserInsightsLifetimeStream,
-    #UserInsightsFollowersStream,
-    #UserInsightsOnlineFollowersStream,
-    #UserInsightsWeeklyStream,
     UsersStream,
 ]
 
@@ -55,6 +47,11 @@ class TapInstagram(Tap):
             th.StringType,
             required=True,
             description="A user access token",
+        ),
+        th.Property(
+            "api_version",
+            th.StringType,
+            description="API version to use for requests (e.g., v17.0)",
         ),
         th.Property(
             "ig_user_ids",
