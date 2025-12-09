@@ -1325,13 +1325,33 @@ class UserInsightsLifetimeStream(BaseUserInsightsLifetimeStream):
             # ---- TOTAL VALUE LOGIC ----
             if "total_value" in row:
                 total = row["total_value"]
+                breakdowns = total.get("breakdowns") or []
+                end_time = pendulum.now("UTC").to_datetime_string()
 
-                item = base.copy()
-                item["value"] = str(total.get("value"))
-                item["key"] = None
-                item["breakdowns"] = json.dumps(total.get("breakdowns", {}))
-                item["end_time"] = pendulum.now("UTC").to_datetime_string()
-                yield item
+                if breakdowns:
+                    for breakdown in breakdowns:
+                        dim_keys = breakdown.get("dimension_keys") or []
+                        dim_key_suffix = "_".join(dim_keys)
+                        for result in breakdown.get("results", []):
+                            dim_vals = result.get("dimension_values") or []
+                            item = base.copy()
+                            item["metric"] = (
+                                f"{row['name']}_{dim_key_suffix}"
+                                if dim_key_suffix
+                                else row["name"]
+                            )
+                            item["key"] = ".".join(dim_vals) if dim_vals else None
+                            item["value"] = str(result.get("value"))
+                            item["breakdowns"] = json.dumps(breakdown)
+                            item["end_time"] = end_time
+                            yield item
+                else:
+                    item = base.copy()
+                    item["value"] = str(total.get("value"))
+                    item["key"] = None
+                    item["breakdowns"] = ""
+                    item["end_time"] = end_time
+                    yield item
 
             # ---- DEFAULT VALUES (ARRAY) ----
             if "values" in row:
