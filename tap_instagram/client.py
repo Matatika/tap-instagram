@@ -67,17 +67,7 @@ class InstagramStream(RESTStream):
         yield from extract_jsonpath(self.records_jsonpath, input=response.json())
 
     def validate_response(self, response: requests.Response) -> None:
-        if response.status_code == 400 and "Unsupported get request" in str(
-            response.json().get("error", {}).get("message")
-        ):
-            msg = (
-                f"{response.status_code} Client Error: "
-                f"{response.reason} - {response.json()['error']['message']}"
-                f" for path: {self.path}"
-            )
-            raise UnsupportedGetRequestError(msg)
-
-        elif 400 <= response.status_code < 500:
+        if 400 <= response.status_code < 500:
             msg = (
                 f"{response.status_code} Client Error: "
                 f"{response.reason} - {response.json()['error']['message']}"
@@ -103,20 +93,9 @@ class InstagramStream(RESTStream):
         Yields:
             One item per (possibly processed) record in the API.
         """
-        try:
-            for record in self.request_records(context):
-                transformed_record = self.post_process(record, context)
-                if transformed_record is None:
-                    # Record filtered out during post_process()
-                    continue
-                yield transformed_record
-        except UnsupportedGetRequestError as e:
-            self.logger.warning(e)
-
-
-class UnsupportedGetRequestError(Exception):
-    """
-    Error object to facilitate skipping IDs that cause trouble
-    with the API but aren't themselves grounds for ending the
-    entire ingestion process.
-    """
+        for record in self.request_records(context):
+            transformed_record = self.post_process(record, context)
+            if transformed_record is None:
+                # Record filtered out during post_process()
+                continue
+            yield transformed_record
