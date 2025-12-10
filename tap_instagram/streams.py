@@ -383,20 +383,41 @@ class BaseMediaInsightsStream(InstagramStream):
         return params
 
     def get_records(self, context):
+        grouped_rows: dict[str, dict] = {}
+
+        def _merge_record(record: dict, is_breakdown: bool = False):
+            key = record.get("id")
+            if not key:
+                return
+
+            base = grouped_rows.setdefault(key, {"id": key})
+            for k, v in record.items():
+                if v is None:
+                    continue
+
+                # Story navigation appears in both standard and breakdown responses; keep the first.
+                if is_breakdown and k == "story_navigation" and k in base:
+                    continue
+
+                base[k] = v
+
         # standard request
         self._current_context = context or {}
         for r in super().get_records(context):
             r["metric_type"] = "standard"
-            yield r
+            _merge_record(r)
 
         # breakdown request
         if self.breakdown_metric:
-            bd = dict(context)
+            bd = dict(context or {})
             bd["breakdown_run"] = True
             self._current_context = bd
             for r in super().get_records(bd):
                 r["metric_type"] = "breakdown"
-                yield r
+                _merge_record(r, is_breakdown=True)
+
+        for row in grouped_rows.values():
+            yield row
 
     def validate_response(self, response):
         err = response.json().get("error", {})
