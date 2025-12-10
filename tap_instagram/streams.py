@@ -1091,6 +1091,10 @@ class UserInsightsStream(InstagramStream):
         elif paging_prev:
             actual_until = self._extract_until_from_paging_url(paging_prev)
 
+        # If there is no paging block (single page), fall back to request URL
+        if actual_until is None and response.request and response.request.url:
+            actual_until = self._extract_until_from_paging_url(response.request.url)
+
         # Save for total_value metrics
         self._current_window_until = actual_until
 
