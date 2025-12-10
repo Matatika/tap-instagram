@@ -1350,6 +1350,7 @@ class UserInsightsLifetimeStream(BaseUserInsightsLifetimeStream):
         th.Property("period", th.StringType),
         th.Property("end_time", th.DateTimeType),
         th.Property("breakdowns", th.StringType),
+        th.Property("dimension_key", th.StringType),
         th.Property("key", th.StringType),
         th.Property("value", th.StringType),
         th.Property("title", th.StringType),
@@ -1397,11 +1398,8 @@ class UserInsightsLifetimeStream(BaseUserInsightsLifetimeStream):
                         for result in breakdown.get("results", []):
                             dim_vals = result.get("dimension_values") or []
                             item = base.copy()
-                            item["metric"] = (
-                                f"{row['name']}_{dim_key_suffix}"
-                                if dim_key_suffix
-                                else row["name"]
-                            )
+                            item["metric"] = row["name"]
+                            item["dimension_key"] = dim_key_suffix or None
                             item["key"] = ".".join(dim_vals) if dim_vals else None
                             item["value"] = str(result.get("value"))
                             item["breakdowns"] = json.dumps(breakdown)
@@ -1410,6 +1408,7 @@ class UserInsightsLifetimeStream(BaseUserInsightsLifetimeStream):
                 else:
                     item = base.copy()
                     item["value"] = str(total.get("value"))
+                    item["dimension_key"] = None
                     item["key"] = None
                     item["breakdowns"] = ""
                     item["end_time"] = end_time
