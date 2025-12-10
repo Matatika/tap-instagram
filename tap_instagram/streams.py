@@ -20,7 +20,6 @@ class UsersStream(InstagramStream):
 
     name = "users"
     path = "/{user_id}"
-    primary_keys = ["id"]
     replication_key = None
     fields = [
         "id",
