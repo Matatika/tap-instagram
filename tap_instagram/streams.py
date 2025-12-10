@@ -466,6 +466,8 @@ class BaseMediaInsightsStream(InstagramStream):
                     record[f"{key}_{k}"] = v
             elif val is not None:
                 record[key] = val
+                if name in ("likes", "comments"):
+                    record[name] = val
 
             # breakdowns
             total = metric.get("total_value", {})
@@ -532,6 +534,16 @@ class MediaInsightsStream(BaseMediaInsightsStream):
             "reel_total_interactions",
             th.IntegerType,
             description="Total interactions on the reel.",
+        ),
+        th.Property(
+            "likes",
+            th.IntegerType,
+            description="Number of likes on the media (no prefix).",
+        ),
+        th.Property(
+            "comments",
+            th.IntegerType,
+            description="Number of comments on the media (no prefix).",
         ),
         # Feed (video/photo) metrics
         th.Property(
@@ -626,6 +638,8 @@ class MediaInsightsStream(BaseMediaInsightsStream):
                     "comments",
                     "reach",
                     "saved",
+                    "views",
+                    "shares",
                 ]
                 return metrics
         elif media_type == "CAROUSEL_ALBUM":
