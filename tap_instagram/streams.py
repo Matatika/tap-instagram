@@ -992,6 +992,23 @@ class UserInsightsStream(InstagramStream):
         return params
 
     def get_records(self, context):
+        grouped_rows: dict[tuple, dict] = {}
+
+        def _merge_record(record: dict):
+            """Combine records by (id, end_time) so different requests fill columns."""
+            key = (record.get("id"), record.get("end_time"))
+            base = grouped_rows.setdefault(
+                key,
+                {
+                    "id": record.get("id"),
+                    "user_id": record.get("user_id"),
+                    "end_time": record.get("end_time"),
+                },
+            )
+            for k, v in record.items():
+                if v is not None:
+                    base[k] = v
+
         for metric_type in self.metric_types:
             # Create a modified context for this metric type
             mt_context = dict(context or {})
@@ -1001,7 +1018,7 @@ class UserInsightsStream(InstagramStream):
 
             for record in super().get_records(mt_context):
                 record["requested_metric_type"] = metric_type
-                yield record
+                _merge_record(record)
 
         # metrics that can have breakdown need to run separately
         if self.breakdown_metrics:
@@ -1012,7 +1029,7 @@ class UserInsightsStream(InstagramStream):
 
             for record in super().get_records(bd_context):
                 record["requested_metric_type"] = "breakdown"
-                yield record
+                _merge_record(record)
 
         if self.reach_metrics:
             reach_periods = ["days_28", "week"]  # <-- your new requirement
@@ -1027,7 +1044,11 @@ class UserInsightsStream(InstagramStream):
                 for record in super().get_records(reach_context):
                     record["requested_metric_type"] = "reach"
                     record["period"] = period        # <-- carry period into records
-                    yield record
+                    _merge_record(record)
+
+        # Yield merged rows so metrics requested in separate calls land on same row
+        for row in grouped_rows.values():
+            yield row
 
     def _request(self, prepared_request, context):
         # Keep track of the context for parse_response
