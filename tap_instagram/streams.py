@@ -384,6 +384,7 @@ class BaseMediaInsightsStream(InstagramStream):
 
     def get_records(self, context):
         # standard request
+        self._current_context = context or {}
         for r in super().get_records(context):
             r["metric_type"] = "standard"
             yield r
@@ -392,6 +393,7 @@ class BaseMediaInsightsStream(InstagramStream):
         if self.breakdown_metric:
             bd = dict(context)
             bd["breakdown_run"] = True
+            self._current_context = bd
             for r in super().get_records(bd):
                 r["metric_type"] = "breakdown"
                 yield r
@@ -420,17 +422,18 @@ class BaseMediaInsightsStream(InstagramStream):
                 record["id"] = mid
 
             name = metric.get("name", "").lower()
-            desc = (metric.get("description") or "").lower()
+            ctx = getattr(self, "_current_context", {}) or {}
 
-            # prefix resolution
-            prefix = ""
-            if "story" in desc:
+            # prefix resolution using media type/product type instead of description
+            media_product_type = ctx.get("media_product_type")
+            media_type = ctx.get("media_type")
+            if media_product_type == "STORY":
                 prefix = "story_"
-            elif "reel" in desc:
+            elif media_product_type == "REELS":
                 prefix = "reel_"
-            elif "carousel" in desc:
+            elif media_type == "CAROUSEL_ALBUM":
                 prefix = "carousel_album_"
-            elif "photo" in desc or "video" in desc:
+            else:
                 prefix = "video_photo_"
 
             key = f"{prefix}{name}"
