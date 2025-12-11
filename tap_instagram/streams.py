@@ -547,6 +547,11 @@ class MediaInsightsStream(BaseMediaInsightsStream):
         ),
         # Feed (video/photo) metrics
         th.Property(
+            "video_photo_total_interactions",
+            th.IntegerType,
+            description="Total interactions on the video or photo.",
+        ),
+        th.Property(
             "video_photo_impressions",
             th.IntegerType,
             description="Number of times the video or photo was seen.",
