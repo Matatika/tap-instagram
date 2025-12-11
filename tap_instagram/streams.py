@@ -644,6 +644,8 @@ class MediaInsightsStream(BaseMediaInsightsStream):
                 return metrics
         elif media_type == "CAROUSEL_ALBUM":
             return [
+                "likes",
+                "comments",
                 "reach",
                 "saved",
                 "shares",
