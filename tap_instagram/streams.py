@@ -547,11 +547,6 @@ class MediaInsightsStream(BaseMediaInsightsStream):
         ),
         # Feed (video/photo) metrics
         th.Property(
-            "video_photo_engagement",
-            th.IntegerType,
-            description="Total engagement on the video or photo post.",
-        ),
-        th.Property(
             "video_photo_impressions",
             th.IntegerType,
             description="Number of times the video or photo was seen.",
