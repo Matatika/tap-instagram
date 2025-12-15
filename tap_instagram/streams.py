@@ -267,7 +267,7 @@ class MediaChildrenStream(MediaStream):
 
 
 class MediaCommentsStream(MediaStream):
-    """Define custom stream."""
+    """Media comments stream (expands replies as separate rows)."""
 
     name = "media_comments"
     parent_stream_type = MediaStream
@@ -348,6 +348,28 @@ class MediaCommentsStream(MediaStream):
             "also created the media, otherwise username field will be returned instead.",
         ),
     ).to_dict()
+
+    def parse_response(self, response):
+        for row in extract_jsonpath(self.records_jsonpath, response.json()):
+            replies = (row.get("replies") or {}).get("data") or []
+            row.pop("replies", None)
+
+            ts = row.get("timestamp")
+            if ts:
+                row["timestamp"] = pendulum.parse(ts).format("YYYY-MM-DD HH:mm:ss")
+
+            # Emit the top-level comment
+            yield row
+
+            # Emit replies as separate rows with parent_id pointing to the top-level comment
+            for reply in replies:
+                reply_ts = reply.get("timestamp")
+                if reply_ts:
+                    reply["timestamp"] = pendulum.parse(reply_ts).format(
+                        "YYYY-MM-DD HH:mm:ss"
+                    )
+                reply["parent_id"] = row.get("id")
+                yield reply
 
 class BaseMediaInsightsStream(InstagramStream):
     """Shared logic for MediaInsights and StoryInsights."""
