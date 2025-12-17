@@ -20,7 +20,6 @@ class UsersStream(InstagramStream):
 
     name = "users"
     path = "/{user_id}"
-    primary_keys = ["id"]
     replication_key = None
     fields = [
         "id",
@@ -268,7 +267,7 @@ class MediaChildrenStream(MediaStream):
 
 
 class MediaCommentsStream(MediaStream):
-    """Define custom stream."""
+    """Media comments stream (expands replies as separate rows)."""
 
     name = "media_comments"
     parent_stream_type = MediaStream
@@ -350,6 +349,28 @@ class MediaCommentsStream(MediaStream):
         ),
     ).to_dict()
 
+    def parse_response(self, response):
+        for row in extract_jsonpath(self.records_jsonpath, response.json()):
+            replies = (row.get("replies") or {}).get("data") or []
+            row.pop("replies", None)
+
+            ts = row.get("timestamp")
+            if ts:
+                row["timestamp"] = pendulum.parse(ts).format("YYYY-MM-DD HH:mm:ss")
+
+            # Emit the top-level comment
+            yield row
+
+            # Emit replies as separate rows with parent_id pointing to the top-level comment
+            for reply in replies:
+                reply_ts = reply.get("timestamp")
+                if reply_ts:
+                    reply["timestamp"] = pendulum.parse(reply_ts).format(
+                        "YYYY-MM-DD HH:mm:ss"
+                    )
+                reply["parent_id"] = row.get("id")
+                yield reply
+
 class BaseMediaInsightsStream(InstagramStream):
     """Shared logic for MediaInsights and StoryInsights."""
     
@@ -383,18 +404,41 @@ class BaseMediaInsightsStream(InstagramStream):
         return params
 
     def get_records(self, context):
+        grouped_rows: dict[str, dict] = {}
+
+        def _merge_record(record: dict, is_breakdown: bool = False):
+            key = record.get("id")
+            if not key:
+                return
+
+            base = grouped_rows.setdefault(key, {"id": key})
+            for k, v in record.items():
+                if v is None:
+                    continue
+
+                # Story navigation appears in both standard and breakdown responses; keep the first.
+                if is_breakdown and k == "story_navigation" and k in base:
+                    continue
+
+                base[k] = v
+
         # standard request
+        self._current_context = context or {}
         for r in super().get_records(context):
             r["metric_type"] = "standard"
-            yield r
+            _merge_record(r)
 
         # breakdown request
         if self.breakdown_metric:
-            bd = dict(context)
+            bd = dict(context or {})
             bd["breakdown_run"] = True
+            self._current_context = bd
             for r in super().get_records(bd):
                 r["metric_type"] = "breakdown"
-                yield r
+                _merge_record(r, is_breakdown=True)
+
+        for row in grouped_rows.values():
+            yield row
 
     def validate_response(self, response):
         err = response.json().get("error", {})
@@ -420,17 +464,18 @@ class BaseMediaInsightsStream(InstagramStream):
                 record["id"] = mid
 
             name = metric.get("name", "").lower()
-            desc = (metric.get("description") or "").lower()
+            ctx = getattr(self, "_current_context", {}) or {}
 
-            # prefix resolution
-            prefix = ""
-            if "story" in desc:
+            # prefix resolution using media type/product type instead of description
+            media_product_type = ctx.get("media_product_type")
+            media_type = ctx.get("media_type")
+            if media_product_type == "STORY":
                 prefix = "story_"
-            elif "reel" in desc:
+            elif media_product_type == "REELS":
                 prefix = "reel_"
-            elif "carousel" in desc:
+            elif media_type == "CAROUSEL_ALBUM":
                 prefix = "carousel_album_"
-            elif "photo" in desc or "video" in desc:
+            else:
                 prefix = "video_photo_"
 
             key = f"{prefix}{name}"
@@ -443,6 +488,8 @@ class BaseMediaInsightsStream(InstagramStream):
                     record[f"{key}_{k}"] = v
             elif val is not None:
                 record[key] = val
+                if name in ("likes", "comments"):
+                    record[name] = val
 
             # breakdowns
             total = metric.get("total_value", {})
@@ -510,11 +557,21 @@ class MediaInsightsStream(BaseMediaInsightsStream):
             th.IntegerType,
             description="Total interactions on the reel.",
         ),
+        th.Property(
+            "likes",
+            th.IntegerType,
+            description="Number of likes on the media (no prefix).",
+        ),
+        th.Property(
+            "comments",
+            th.IntegerType,
+            description="Number of comments on the media (no prefix).",
+        ),
         # Feed (video/photo) metrics
         th.Property(
-            "video_photo_engagement",
+            "video_photo_total_interactions",
             th.IntegerType,
-            description="Total engagement on the video or photo post.",
+            description="Total interactions on the video or photo.",
         ),
         th.Property(
             "video_photo_impressions",
@@ -603,10 +660,14 @@ class MediaInsightsStream(BaseMediaInsightsStream):
                     "comments",
                     "reach",
                     "saved",
+                    "views",
+                    "shares",
                 ]
                 return metrics
         elif media_type == "CAROUSEL_ALBUM":
             return [
+                "likes",
+                "comments",
                 "reach",
                 "saved",
                 "shares",
@@ -992,6 +1053,23 @@ class UserInsightsStream(InstagramStream):
         return params
 
     def get_records(self, context):
+        grouped_rows: dict[tuple, dict] = {}
+
+        def _merge_record(record: dict):
+            """Combine records by (id, end_time) so different requests fill columns."""
+            key = (record.get("id"), record.get("end_time"))
+            base = grouped_rows.setdefault(
+                key,
+                {
+                    "id": record.get("id"),
+                    "user_id": record.get("user_id"),
+                    "end_time": record.get("end_time"),
+                },
+            )
+            for k, v in record.items():
+                if v is not None:
+                    base[k] = v
+
         for metric_type in self.metric_types:
             # Create a modified context for this metric type
             mt_context = dict(context or {})
@@ -1001,7 +1079,7 @@ class UserInsightsStream(InstagramStream):
 
             for record in super().get_records(mt_context):
                 record["requested_metric_type"] = metric_type
-                yield record
+                _merge_record(record)
 
         # metrics that can have breakdown need to run separately
         if self.breakdown_metrics:
@@ -1012,7 +1090,7 @@ class UserInsightsStream(InstagramStream):
 
             for record in super().get_records(bd_context):
                 record["requested_metric_type"] = "breakdown"
-                yield record
+                _merge_record(record)
 
         if self.reach_metrics:
             reach_periods = ["days_28", "week"]  # <-- your new requirement
@@ -1027,7 +1105,11 @@ class UserInsightsStream(InstagramStream):
                 for record in super().get_records(reach_context):
                     record["requested_metric_type"] = "reach"
                     record["period"] = period        # <-- carry period into records
-                    yield record
+                    _merge_record(record)
+
+        # Yield merged rows so metrics requested in separate calls land on same row
+        for row in grouped_rows.values():
+            yield row
 
     def _request(self, prepared_request, context):
         # Keep track of the context for parse_response
@@ -1066,6 +1148,10 @@ class UserInsightsStream(InstagramStream):
             actual_until = self._extract_until_from_paging_url(paging_next)
         elif paging_prev:
             actual_until = self._extract_until_from_paging_url(paging_prev)
+
+        # If there is no paging block (single page), fall back to request URL
+        if actual_until is None and response.request and response.request.url:
+            actual_until = self._extract_until_from_paging_url(response.request.url)
 
         # Save for total_value metrics
         self._current_window_until = actual_until
@@ -1177,7 +1263,7 @@ class BaseUserInsightsLifetimeStream(InstagramStream):
 
     min_start_date: datetime = pendulum.now("UTC").subtract(years=2).add(days=1)
     max_end_date: datetime = pendulum.today("UTC")
-    max_time_window: timedelta = pendulum.duration(days=30)
+    max_time_window: timedelta = pendulum.duration(days=1)
 
     time_period = "lifetime"
     timeframe = "this_month"
@@ -1247,8 +1333,7 @@ class BaseUserInsightsLifetimeStream(InstagramStream):
         until = min(window_end, max_until)
         return since, until
 
-    def get_url_params(self, context, next_page_token):
-        params = super().get_url_params(context, next_page_token)
+    def _populate_metric_params(self, params: dict, context) -> dict:
         if context and context.get("default_metric"):
             params["metric"] = ",".join(self.default_metrics)
             params["metric_type"] = "default"
@@ -1259,6 +1344,38 @@ class BaseUserInsightsLifetimeStream(InstagramStream):
         params["period"] = self.time_period
         if context and "lifetime_breakdown" in context:
             params["breakdown"] = context["lifetime_breakdown"]
+        return params
+
+    def get_url_params(self, context, next_page_token):
+        # Manual paging: next_page_token may be a dict we created or a querystring
+        if isinstance(next_page_token, dict):
+            params = self._populate_metric_params(
+                super().get_url_params(context, None), context
+            )
+            params.update(next_page_token)
+        else:
+            params = super().get_url_params(context, next_page_token)
+
+        if next_page_token:
+            # When paging, ensure metrics are present and flatten any qs lists.
+            flattened = {
+                k: v[0] if isinstance(v, list) and len(v) == 1 else v
+                for k, v in params.items()
+            }
+            try:
+                if "since" in flattened:
+                    self._last_since = pendulum.from_timestamp(
+                        int(flattened["since"]), tz="UTC"
+                    )
+                if "until" in flattened:
+                    self._last_until = pendulum.from_timestamp(
+                        int(flattened["until"]), tz="UTC"
+                    )
+            except Exception:
+                pass
+            return flattened
+
+        params = self._populate_metric_params(params, context)
 
         if self.has_pagination:
             since, until = self._fetch_time_based_pagination_range(
@@ -1267,9 +1384,38 @@ class BaseUserInsightsLifetimeStream(InstagramStream):
                 max_until=self.max_end_date,
                 max_time_window=self.max_time_window,
             )
-            params["since"] = since
-            params["until"] = until
+            params["since"] = int(since.timestamp())
+            params["until"] = int(until.timestamp())
+            self._last_since = since
+            self._last_until = until
         return params
+
+    def get_next_page_token(
+        self, response: requests.Response, previous_token: Optional[Any]
+    ) -> Any:
+        token = super().get_next_page_token(response, previous_token)
+        if token:
+            return token
+
+        # Manual day-by-day pagination for total_value metrics when API omits paging
+        last_until: Optional[pendulum.DateTime] = getattr(self, "_last_until", None)
+        last_since: Optional[pendulum.DateTime] = getattr(self, "_last_since", None)
+        if not last_until or not last_since:
+            return None
+
+        if last_until >= self.max_end_date:
+            return None
+
+        next_since = last_until.add(seconds=1)
+        next_until = min(
+            next_since.add(seconds=self.max_time_window.total_seconds()),
+            self.max_end_date,
+        )
+
+        if next_until <= last_until:
+            return None
+
+        return {"since": int(next_since.timestamp()), "until": int(next_until.timestamp())}
 
 
 class UserInsightsLifetimeStream(BaseUserInsightsLifetimeStream):
@@ -1288,6 +1434,7 @@ class UserInsightsLifetimeStream(BaseUserInsightsLifetimeStream):
         th.Property("period", th.StringType),
         th.Property("end_time", th.DateTimeType),
         th.Property("breakdowns", th.StringType),
+        th.Property("dimension_key", th.StringType),
         th.Property("key", th.StringType),
         th.Property("value", th.StringType),
         th.Property("title", th.StringType),
@@ -1312,8 +1459,48 @@ class UserInsightsLifetimeStream(BaseUserInsightsLifetimeStream):
                     record["metric_type"] = "total_value"
                     yield record
 
+    def _extract_until_from_paging_url(self, url: str):
+        """Extract the 'until' timestamp (unix or iso string) from an Instagram paging URL."""
+        if not url:
+            return None
+        try:
+            parsed = urllib.parse.urlparse(url)
+            qs = urllib.parse.parse_qs(parsed.query)
+            until_value = qs.get("until", [None])[0]
+            if until_value is None:
+                return None
+            try:
+                return pendulum.from_timestamp(int(until_value), tz="UTC")
+            except (TypeError, ValueError):
+                return pendulum.parse(until_value)
+        except Exception:
+            return None
+
     def parse_response(self, response):
-        for row in response.json()["data"]:
+        resp_json = response.json()
+        data = resp_json.get("data", [])
+        if not data:
+            return
+
+        paging = resp_json.get("paging", {}) if isinstance(resp_json, dict) else {}
+        actual_until = (
+            self._extract_until_from_paging_url(paging.get("next"))
+            or self._extract_until_from_paging_url(paging.get("previous"))
+            or (
+                self._extract_until_from_paging_url(response.request.url)
+                if response.request
+                else None
+            )
+            or getattr(self, "_last_until", None)
+        )
+
+        end_time_default = (
+            actual_until.to_datetime_string()
+            if actual_until
+            else pendulum.now("UTC").to_datetime_string()
+        )
+
+        for row in data:
             base = {
                 "id": row["id"].split("/")[0],
                 "metric": row["name"],
@@ -1325,13 +1512,31 @@ class UserInsightsLifetimeStream(BaseUserInsightsLifetimeStream):
             # ---- TOTAL VALUE LOGIC ----
             if "total_value" in row:
                 total = row["total_value"]
+                breakdowns = total.get("breakdowns") or []
+                end_time = end_time_default
 
-                item = base.copy()
-                item["value"] = str(total.get("value"))
-                item["key"] = None
-                item["breakdowns"] = json.dumps(total.get("breakdowns", {}))
-                item["end_time"] = pendulum.now("UTC").to_datetime_string()
-                yield item
+                if breakdowns:
+                    for breakdown in breakdowns:
+                        dim_keys = breakdown.get("dimension_keys") or []
+                        dim_key_suffix = "_".join(dim_keys)
+                        for result in breakdown.get("results", []):
+                            dim_vals = result.get("dimension_values") or []
+                            item = base.copy()
+                            item["metric"] = row["name"]
+                            item["dimension_key"] = dim_key_suffix or None
+                            item["key"] = ".".join(dim_vals) if dim_vals else None
+                            item["value"] = str(result.get("value"))
+                            item["breakdowns"] = json.dumps(breakdown)
+                            item["end_time"] = end_time
+                            yield item
+                else:
+                    item = base.copy()
+                    item["value"] = str(total.get("value"))
+                    item["dimension_key"] = None
+                    item["key"] = None
+                    item["breakdowns"] = ""
+                    item["end_time"] = end_time
+                    yield item
 
             # ---- DEFAULT VALUES (ARRAY) ----
             if "values" in row:
@@ -1339,7 +1544,7 @@ class UserInsightsLifetimeStream(BaseUserInsightsLifetimeStream):
                     end_time = (
                         pendulum.parse(val["end_time"]).to_datetime_string()
                         if "end_time" in val
-                        else pendulum.now("UTC").to_datetime_string()
+                        else end_time_default
                     )
 
                     for k, v in val.get("value", {}).items():
