@@ -1186,11 +1186,11 @@ class UserInsightsStream(InstagramStream):
 
                 for point in metric["values"]:
                     ts = pendulum.parse(point["end_time"])
-                    end_date = ts.format("YYYY-MM-DD")
+                    end_time = ts.to_datetime_string()
 
                     row = rows_by_date.setdefault(
-                        end_date,
-                        {"id": user_id, "user_id": user_id, "end_time": end_date},
+                        end_time,
+                        {"id": user_id, "user_id": user_id, "end_time": end_time},
                     )
 
                     row[field_name] = point.get("value")
@@ -1204,10 +1204,10 @@ class UserInsightsStream(InstagramStream):
                 
                 # if it's a daily metric with total_value, still give it a date
                 if getattr(self, "_current_window_until", None):
-                    end_time_fmt = self._current_window_until.format("YYYY-MM-DD")
+                    end_time_fmt = self._current_window_until.to_datetime_string()
                 else:
                     # fallback: today's date (only happens on first page with no paging block)
-                    end_time_fmt = pendulum.now("UTC").format("YYYY-MM-DD")
+                    end_time_fmt = pendulum.now("UTC").to_datetime_string()
                 
                 row = rows_by_date.setdefault(
                     end_time_fmt,
