@@ -74,11 +74,24 @@ class BaseMediaStream(InstagramStream):
 
     def get_url_params(self, context, next_page_token):
         params = super().get_url_params(context, next_page_token)
+        params["limit"] = 1000
         if hasattr(self, "fields"):
             params["fields"] = ",".join(self.fields)
         if getattr(self, "replication_key", None):
-            params["since"] = self.get_starting_timestamp(context)
+            since = self.make_since_param(context)
+            params["since"] = since or self.config.get("start_date")
+        else:
+            params["since"] = self.config.get("start_date")
         return params
+    
+    def make_since_param(self, context: Optional[dict]) -> datetime:
+        state_ts = self.get_starting_timestamp(context)
+        if state_ts:
+            return pendulum.instance(state_ts).subtract(
+                days=self.config["media_insights_lookback_days"]
+            )
+        else:
+            return state_ts
 
     def get_records(self, context):
         for row in super().get_records(context):
