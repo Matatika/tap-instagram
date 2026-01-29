@@ -74,10 +74,10 @@ class BaseMediaStream(InstagramStream):
 
     def get_url_params(self, context, next_page_token):
         params = super().get_url_params(context, next_page_token)
+        params["limit"] = 1000
         if hasattr(self, "fields"):
             params["fields"] = ",".join(self.fields)
-        if getattr(self, "replication_key", None):
-            params["since"] = self.get_starting_timestamp(context)
+        params["since"] = self.config.get("start_date")
         return params
 
     def get_records(self, context):
@@ -103,7 +103,6 @@ class MediaStream(BaseMediaStream):
     path = "/{user_id}/media"  # user_id is populated using child context keys from UsersStream
     parent_stream_type = UsersStream
     primary_keys = ["id","timestamp"]
-    replication_key = "timestamp"
     records_jsonpath = "$.data[*]"
     inject_context_fields: list[str] = []
     fields = [
