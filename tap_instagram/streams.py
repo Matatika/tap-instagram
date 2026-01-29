@@ -77,8 +77,21 @@ class BaseMediaStream(InstagramStream):
         params["limit"] = 1000
         if hasattr(self, "fields"):
             params["fields"] = ",".join(self.fields)
-        params["since"] = self.config.get("start_date")
+        if getattr(self, "replication_key", None):
+            since = self.make_since_param(context)
+            params["since"] = since or self.config.get("start_date")
+        else:
+            params["since"] = self.config.get("start_date")
         return params
+    
+    def make_since_param(self, context: Optional[dict]) -> datetime:
+        state_ts = self.get_starting_timestamp(context)
+        if state_ts:
+            return pendulum.instance(state_ts).subtract(
+                days=self.config["media_insights_lookback_days"]
+            )
+        else:
+            return state_ts
 
     def get_records(self, context):
         for row in super().get_records(context):
@@ -103,6 +116,7 @@ class MediaStream(BaseMediaStream):
     path = "/{user_id}/media"  # user_id is populated using child context keys from UsersStream
     parent_stream_type = UsersStream
     primary_keys = ["id","timestamp"]
+    replication_key = "timestamp"
     records_jsonpath = "$.data[*]"
     inject_context_fields: list[str] = []
     fields = [
