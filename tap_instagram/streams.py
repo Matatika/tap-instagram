@@ -1273,6 +1273,10 @@ class BaseUserInsightsLifetimeStream(InstagramStream):
     parent_stream_type = UsersStream
     records_jsonpath = "$.data[*]"
     has_pagination = True
+    # Use a single bookmark per user across all lifetime metric variants
+    # (default metrics and each breakdown) so we don't start over for every
+    # sub-context on subsequent runs.
+    state_partitioning_keys = ["user_id"]
 
     min_start_date: datetime = pendulum.now("UTC").subtract(years=2).add(days=1)
     max_end_date: datetime = pendulum.today("UTC")
