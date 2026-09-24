@@ -54,9 +54,12 @@ class InstagramStream(RESTStream):
         self, context: Optional[dict], next_page_token: Optional[Any]
     ) -> Dict[str, Any]:
         """Return a dictionary of values to be used in URL parameterization."""
-        if next_page_token:  # TODO: understand what this does & why it works!
-            return urllib.parse.parse_qs(urllib.parse.urlparse(next_page_token).query)
         params: dict = {"access_token": self.config["access_token"]}
+        if next_page_token:  # TODO: understand what this does & why it works!
+            params.update(
+                urllib.parse.parse_qs(urllib.parse.urlparse(next_page_token).query)
+            )
+            return params
         if self.replication_key:
             params["sort"] = "asc"
             params["order_by"] = self.replication_key
