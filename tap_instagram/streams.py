@@ -1059,7 +1059,14 @@ class UserInsightsStream(InstagramStream):
                 context,
                 min_since=self.min_start_date,
                 max_until=self.max_end_date,
-                max_time_window=self.max_time_window,
+                # A time series returns one value for each day of the window.
+                # A total value is one sum for the whole window, so it must
+                # stay at one day to keep the daily grain.
+                max_time_window=(
+                    pendulum.duration(days=30)
+                    if context and context.get("reach")
+                    else self.max_time_window
+                ),
             )
             params["since"] = int(since.timestamp())
             params["until"] = int(until.timestamp())
