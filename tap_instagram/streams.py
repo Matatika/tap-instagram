@@ -953,10 +953,10 @@ class UserInsightsStream(InstagramStream):
     max_end_date: datetime = pendulum.today("UTC")
     max_time_window: timedelta = pendulum.duration(days=1)
     time_period: str  # TODO: Use an Enum type instead
-    total_value_metrics: List[str]
+    total_value_metrics: List[str] = []
     time_series_metrics: List[str]
-    breakdown_metrics: List[str]
-    reach_metrics: str
+    breakdown_metrics: List[str] = []
+    reach_metrics: str = ""
     metric_types = ["total_value"]
     breakdowns: List[str]
 
