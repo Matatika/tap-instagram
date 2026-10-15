@@ -12,6 +12,9 @@ import urllib
 
 from tap_instagram.client import InstagramStream
 
+# The API rejects more than 30 days between `since` and `until`.
+MAX_INSIGHTS_TIME_WINDOW = pendulum.duration(days=30)
+
 # SCHEMAS_DIR = Path(__file__).parent / Path("./schemas")
 
 
@@ -1063,7 +1066,7 @@ class UserInsightsStream(InstagramStream):
                 # A total value is one sum for the whole window, so it must
                 # stay at one day to keep the daily grain.
                 max_time_window=(
-                    pendulum.duration(days=30)
+                    MAX_INSIGHTS_TIME_WINDOW
                     if context and context.get("reach")
                     else self.max_time_window
                 ),
@@ -1589,6 +1592,9 @@ class UserInsightsCustomStream(UserInsightsStream):
         self.time_period = report_config.get("time_period", "day")
         self.timeframe = report_config.get("timeframe")
         self.metric_type = report_config.get("metric_type", "total_value")
+        # A time series returns one value for each day of the window.
+        if self.metric_type == "time_series":
+            self.max_time_window = MAX_INSIGHTS_TIME_WINDOW
         self.breakdown = report_config.get("breakdown")
         self.ig_user_ids = tap.config.get("ig_user_ids", [])
 
