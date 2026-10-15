@@ -1288,7 +1288,8 @@ class BaseUserInsightsLifetimeStream(InstagramStream):
     # sub-context on subsequent runs.
     state_partitioning_keys = ["user_id"]
 
-    min_start_date: datetime = pendulum.now("UTC").subtract(years=2).add(days=1)
+    # `online_followers` has no data older than 30 days.
+    min_start_date: datetime = pendulum.today("UTC").subtract(days=30)
     max_end_date: datetime = pendulum.today("UTC")
     max_time_window: timedelta = pendulum.duration(days=1)
 
@@ -1404,7 +1405,11 @@ class BaseUserInsightsLifetimeStream(InstagramStream):
 
         params = self._populate_metric_params(params, context)
 
-        if self.has_pagination:
+        # A demographic metric takes its range from `timeframe` and ignores
+        # `since` and `until`, so one request returns all of its data. Clear
+        # the window of an earlier request, so that no page follows it.
+        self._last_since = self._last_until = None
+        if self.has_pagination and params["metric_type"] != "total_value":
             since, until = self._fetch_time_based_pagination_range(
                 context,
                 min_since=self.min_start_date,
@@ -1424,7 +1429,7 @@ class BaseUserInsightsLifetimeStream(InstagramStream):
         if token:
             return token
 
-        # Manual day-by-day pagination for total_value metrics when API omits paging
+        # Manual day-by-day pagination when API omits paging
         last_until: Optional[pendulum.DateTime] = getattr(self, "_last_until", None)
         last_since: Optional[pendulum.DateTime] = getattr(self, "_last_since", None)
         if not last_until or not last_since:
@@ -1524,7 +1529,7 @@ class UserInsightsLifetimeStream(BaseUserInsightsLifetimeStream):
         end_time_default = (
             actual_until.to_datetime_string()
             if actual_until
-            else pendulum.now("UTC").to_datetime_string()
+            else pendulum.today("UTC").to_datetime_string()
         )
 
         for row in data:
