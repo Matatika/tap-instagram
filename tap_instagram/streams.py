@@ -1288,7 +1288,8 @@ class BaseUserInsightsLifetimeStream(InstagramStream):
     # sub-context on subsequent runs.
     state_partitioning_keys = ["user_id"]
 
-    min_start_date: datetime = pendulum.now("UTC").subtract(years=2).add(days=1)
+    # `online_followers` has no data older than 30 days.
+    min_start_date: datetime = pendulum.today("UTC").subtract(days=30)
     max_end_date: datetime = pendulum.today("UTC")
     max_time_window: timedelta = pendulum.duration(days=1)
 
